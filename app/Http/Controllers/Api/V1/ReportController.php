@@ -42,7 +42,13 @@ class ReportController extends Controller
                 'sensitive' => $c->is_sensitive,
             ]);
 
-        return $this->respond($categories, 'Kategori pengaduan.');
+        return $this->respond($categories, 'Kategori pengaduan.', 200, [
+            'uploads' => [
+                'max_files' => (int) config('security.uploads.max_report_attachments'),
+                'max_file_bytes' => (int) config('security.uploads.report_max_kb') * 1024,
+                'max_total_bytes' => (int) config('security.uploads.report_max_total_bytes'),
+            ],
+        ]);
     }
 
     /**

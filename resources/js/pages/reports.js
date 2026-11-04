@@ -90,8 +90,9 @@ async function createReport(ctx) {
         ctx.page('Buat pengaduan', 'Fitur kelas belum tersedia.', alertBox('Identitas terverifikasi, keanggotaan aktif, dan izin membuat pengaduan diperlukan.'), back);
         return;
     }
-    const { data: categories } = await ctx.api('/report-categories');
+    const { data: categories, meta: { uploads } } = await ctx.api('/report-categories');
     if (!ctx.view.isConnected) return;
+    const attachmentLimits = `Maksimal ${uploads.max_files} file, masing-masing ${uploads.max_file_bytes / (1024 * 1024)} MiB, total ${uploads.max_total_bytes / (1024 * 1024)} MiB.`;
     ctx.page('Ceritakan dengan aman', 'Pengaduan bersifat privat dan tidak dipublikasikan sebagai aspirasi kelas.', `
         <div class="stack">${alertBox('Kelas dan penangan ditentukan oleh sistem. Tuliskan fakta yang relevan; jangan menyertakan kata sandi atau informasi pribadi yang tidak diperlukan.')}
         ${categories.length ? `<form data-create-report class="panel stack" enctype="multipart/form-data">
@@ -100,7 +101,7 @@ async function createReport(ctx) {
             ${textarea('description', 'Uraian kejadian', { required: true, minLength: 30, maxLength: 20000, help: 'Jelaskan apa yang terjadi, waktu kejadian, dan dampaknya. Minimal 30 karakter.' })}
             ${textarea('desired_outcome', 'Hasil yang diharapkan (opsional)', { maxLength: 5000 })}
             ${textarea('involved_parties', 'Pihak yang terlibat (opsional)', { help: 'Satu nama per baris, maksimal 20 nama dan 200 karakter per nama. Digunakan untuk pemeriksaan konflik kepentingan.' })}
-            ${field('attachments', 'Lampiran (opsional)', { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.pdf,.txt', help: 'Maksimal 5 file, masing-masing 8 MB. JPG, PNG, PDF, atau TXT. Lampiran hanya dapat ditambahkan saat membuat pengaduan.' })}
+            ${field('attachments', 'Lampiran (opsional)', { type: 'file', multiple: true, accept: '.jpg,.jpeg,.png,.pdf,.txt', help: `${attachmentLimits} JPG, PNG, PDF, atau TXT. Lampiran hanya dapat ditambahkan saat membuat pengaduan.` })}
             <div class="toolbar"><button class="button" type="submit">Kirim pengaduan privat</button>${back}</div>
         </form>` : empty('Kategori belum tersedia', 'Pengaduan belum dapat dibuat karena katalog kategori belum tersedia.')}</div>`, back);
     const form = ctx.view.querySelector('[data-create-report]');
@@ -111,7 +112,10 @@ async function createReport(ctx) {
         partiesInput.setCustomValidity(parties.length > 20 || parties.some((value) => value.length > 200) ? 'Gunakan maksimal 20 nama dengan maksimal 200 karakter per nama.' : '');
         const fileInput = element.elements.namedItem('attachments');
         const files = [...fileInput.files];
-        fileInput.setCustomValidity(files.length > 5 || files.some((file) => file.size > 8192 * 1024) ? 'Pilih maksimal 5 file, masing-masing paling besar 8 MB.' : '');
+        const invalidFiles = files.length > uploads.max_files
+            || files.some((file) => file.size > uploads.max_file_bytes)
+            || files.reduce((total, file) => total + file.size, 0) > uploads.max_total_bytes;
+        fileInput.setCustomValidity(invalidFiles ? attachmentLimits : '');
         if (!element.reportValidity()) return;
         const body = new FormData();
         for (const key of ['category_id', 'title', 'description', 'desired_outcome']) {

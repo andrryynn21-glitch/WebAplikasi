@@ -3,6 +3,8 @@
 namespace App\Http\Requests\Reports;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Validation\Validator;
 
 /**
  * payload pembuatan pengaduan.
@@ -34,6 +36,24 @@ class StoreReportRequest extends FormRequest
             'attachments' => ['nullable', 'array', 'max:'.$maxAttachments],
             'attachments.*' => ['file', 'mimes:jpg,jpeg,png,pdf,txt', 'max:'.$maxKb],
         ];
+    }
+
+    public function after(): array
+    {
+        return [function (Validator $validator): void {
+            if ($validator->errors()->isNotEmpty()) {
+                return;
+            }
+
+            $maxTotalBytes = (int) config('security.uploads.report_max_total_bytes');
+            $totalBytes = collect($this->file('attachments', []))
+                ->sum(fn (UploadedFile $file): int => $file->getSize());
+
+            if ($totalBytes > $maxTotalBytes) {
+                $maxTotalMiB = $maxTotalBytes / (1024 * 1024);
+                $validator->errors()->add('attachments', "Ukuran total lampiran maksimal {$maxTotalMiB} MiB.");
+            }
+        }];
     }
 
     public function messages(): array

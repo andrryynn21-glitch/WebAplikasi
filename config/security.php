@@ -41,13 +41,14 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Batas upload lampiran (KB)
+    | Batas upload lampiran (KB per file, bytes untuk total)
     |--------------------------------------------------------------------------
     */
 
     'uploads' => [
         'identity_max_kb' => 4096,
         'report_max_kb' => 8192,
+        'report_max_total_bytes' => (int) env('REPORT_MAX_TOTAL_BYTES', 26214400),
         'aspiration_max_kb' => 4096,
         'max_report_attachments' => 5,
         'max_aspiration_attachments' => 3,

@@ -340,6 +340,94 @@ async function reportHarness(report, updateForm = null) {
     return { html, submit: () => submit(updateForm), requests };
 }
 
+async function createReportHarness(sizes, maxTotalBytes = 26214400) {
+    let html; let submit; const requests = [];
+    const inputs = Object.fromEntries(Object.entries({
+        category_id: '1', title: 'Synthetic report', description: 'Synthetic report description for upload limit testing.',
+        desired_outcome: '', involved_parties: '', attachments: '',
+    }).map(([name, value]) => [name, {
+        value, validityMessage: '', events: {},
+        setCustomValidity(message) { this.validityMessage = message; },
+        addEventListener(event, handler) { this.events[event] = handler; },
+    }]));
+    inputs.attachments.files = sizes.map((size) => {
+        const file = new File(['synthetic'], 'synthetic.png', { type: 'image/png' });
+        Object.defineProperty(file, 'size', { value: size });
+        return file;
+    });
+    const form = {
+        elements: { namedItem: (name) => inputs[name] },
+        reportValidity: () => Object.values(inputs).every((input) => input.validityMessage === ''),
+    };
+    const ctx = {
+        has: () => true, canClass: () => true,
+        view: { isConnected: true, querySelector: () => form },
+        api: async (path, options) => {
+            requests.push([path, options]);
+            return path === '/report-categories'
+                ? { data: [{ id: 1, name: 'Facilities' }], meta: { uploads: { max_files: 5, max_file_bytes: 8388608, max_total_bytes: maxTotalBytes } } }
+                : { data: { public_ref: 'PGD-SYNTHETIC' } };
+        },
+        page: (title, description, content) => { html = content; },
+        form: (element, handler) => { submit = handler; },
+        toast() {}, navigate() {},
+    };
+    await reportsPage(ctx, ['reports', 'new'], new URLSearchParams());
+    return { html, inputs, submit: () => submit(form), requests };
+}
+
+test('report creation displays server-provided total upload limit', async () => {
+    for (const [limit, label] of [[26214400, '25'], [16777216, '16']]) {
+        const report = await createReportHarness([], limit);
+        assert.ok(report.html.includes(`Maksimal 5 file, masing-masing 8 MiB, total ${label} MiB.`));
+    }
+});
+
+test('report upload preflight blocks aggregate overflow before POST and preserves per-file and count limits', async () => {
+    for (const [sizes, limit] of [
+        [[8388608, 8388608, 8388608, 1048577], 26214400],
+        [[7340032, 7340032, 7340032, 7340032], 26214400],
+        [[6291456, 6291456, 6291456], 16777216],
+        [[8388609], 26214400],
+        [[1024, 1024, 1024, 1024, 1024, 1024], 26214400],
+    ]) {
+        const report = await createReportHarness(sizes, limit);
+        await report.submit();
+        assert.equal(report.requests.filter(([, options]) => options?.method === 'POST').length, 0);
+        assert.match(report.inputs.attachments.validityMessage, /Maksimal 5 file.*8 MiB, total/);
+    }
+});
+
+test('report upload preflight allows exact boundary, normal small files and no attachments', async () => {
+    for (const sizes of [[8388608, 8388608, 8388608, 1048576], [8388608, 8388608, 8388608], [1024, 1024, 1024, 1024, 1024], []]) {
+        const report = await createReportHarness(sizes);
+        await report.submit();
+        const posts = report.requests.filter(([, options]) => options?.method === 'POST');
+        assert.equal(posts.length, 1);
+        assert.equal(posts[0][0], '/reports');
+        assert.equal(posts[0][1].body.getAll('attachments[]').length, sizes.length);
+        assert.equal(report.inputs.attachments.validityMessage, '');
+    }
+});
+
+test('correcting report file selection clears its validation error and allows resubmission', async () => {
+    const report = await createReportHarness([7340032, 7340032, 7340032, 7340032]);
+    await report.submit();
+    const input = report.inputs.attachments;
+    assert.notEqual(input.validityMessage, '');
+    input.files = input.files.slice(0, 3);
+    input.events.change({ target: input });
+    assert.equal(input.validityMessage, '');
+    await report.submit();
+    assert.equal(report.requests.filter(([, options]) => options?.method === 'POST').length, 1);
+});
+
+test('host HTML 413 response preserves HTTP status without leaking upstream diagnostics', async () => {
+    const api = createApi({ fetcher: async () => new Response('<html>private proxy diagnostic</html>', { status: 413, headers: { 'Content-Type': 'text/html' } }) });
+    await assert.rejects(api('/reports', { method: 'POST', body: new FormData() }), (error) =>
+        error.status === 413 && error.code === 'HTTP_ERROR' && error.message === 'Permintaan tidak dapat diproses.');
+});
+
 const privateReport = {
     public_ref: 'PGD-TEST', title: 'Synthetic private report', status: 'under_review',
     private_details: { description: 'Private body' }, reporter: null,

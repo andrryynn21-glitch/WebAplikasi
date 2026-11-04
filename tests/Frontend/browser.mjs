@@ -43,7 +43,7 @@ async function setup(role = 'student', authenticated = true) {
         if (path === '/auth/login' || path === '/auth/register') return json({ token: 'test-session-token', token_type: 'Bearer', user, expires_in_minutes: 480 }, path.endsWith('register') ? 201 : 200);
         if (path === '/auth/logout' || path === '/auth/logout-all') return json(null);
         if (path === '/dashboard') return json(role === 'super_admin' ? { role, system: { active_users: 45, inactive_users: 2, classes: 3, pending_identity_verifications: 4 }, security: { events_last_24h: 3, high_severity_last_7d: 0 }, note: 'Admin tidak dapat membaca pengaduan privat.' } : role === 'identity_verifier' ? { role, identity_verifications: { pending: 1 } } : role === 'student' ? { role, reports: { total: 3, open: 2, resolved: 1, needs_clarification: 0 }, recent_reports: [report], aspirations: [aspiration], membership: { status: 'active', class: room } } : { role, classes: [room], reports: role === 'class_leader' ? { assigned_open: 2, waiting_clarification: 0, resolved_by_me: 1 } : { needs_review: 1, under_review: 1, waiting_follow_up: 0, resolution_proposed: 1 }, needs_attention: [report], statistics: stats });
-        if (path === '/report-categories') return json(categories);
+        if (path === '/report-categories') return json(categories, 200, { uploads: { max_files: 5, max_file_bytes: 8388608, max_total_bytes: 26214400 } });
         if (path === '/reports/statistics') return json(stats);
         if (path === '/reports' && method === 'GET') { if (state.slowReports) await new Promise((r) => setTimeout(r, 400)); return list(state.emptyReports ? [] : [report]); }
         if (path === '/reports' && method === 'POST') {
