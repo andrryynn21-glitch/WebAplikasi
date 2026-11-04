@@ -1,0 +1,113 @@
+name: Validate and Package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: PHP / ${{ matrix.database }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: MySQL 8.4
+            image: mysql:8.4
+            health: mysqladmin ping -h 127.0.0.1 -uroot
+          - database: MariaDB 11.8
+            image: mariadb:11.8
+            health: healthcheck.sh --connect --innodb_initialized
+    services:
+      database:
+        image: ${{ matrix.image }}
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_ROOT_HOST: '%'
+          MYSQL_DATABASE: pengaduan_unpam_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="${{ matrix.health }}"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.5'
+          extensions: pdo_mysql, mbstring, fileinfo, gd, intl, bcmath, zip
+          coverage: none
+          tools: composer:v2
+      - name: Validate dependencies
+        run: composer validate --strict
+      - name: Install test dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+      - name: Prepare isolated test key
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+      - name: Test against disposable database only
+        run: php artisan test --compact --order-by=random
+
+  release:
+    name: Frontend and Production Package
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.5'
+          extensions: pdo_mysql, mbstring, fileinfo, gd, intl, bcmath, zip
+          coverage: none
+          tools: composer:v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install production PHP dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-progress
+      - name: Verify PHP platform
+        run: |
+          composer check-platform-reqs --no-dev
+          php -r 'exit(extension_loaded("gd") && extension_loaded("pdo_mysql") ? 0 : 1);'
+      - name: Test and build frontend
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run build
+      - name: Package only runtime code and empty storage
+        run: |
+          test -f public/build/manifest.json
+          test ! -f .env
+          test ! -f public/hot
+          tar --exclude='bootstrap/cache/*.php' \
+              --exclude='database/*.sqlite*' \
+              --exclude='database/factories' \
+              --exclude='database/seeders/DemoDataSeeder.php' \
+              --exclude='public/hot' --exclude='public/storage' \
+              -czf "ruang-dengar-${GITHUB_SHA}.tar.gz" \
+              app bootstrap config database public resources routes storage vendor \
+              artisan composer.json composer.lock .env.production.example
+          sha256sum "ruang-dengar-${GITHUB_SHA}.tar.gz" > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ruang-dengar-${{ github.sha }}
+          path: |
+            ruang-dengar-*.tar.gz
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
