@@ -11,7 +11,7 @@
 </head>
 <body>
     <a class="skip-link" href="#main-content">Lewati ke konten utama</a>
-    <div id="app" data-api-base="{{ url('/api/v1') }}">
+    <div id="app" data-api-base="{{ url('/api/v1') }}" data-api-credentials="{{ config('app.frontend_api_credentials', 'omit') }}">
         <main id="main-content" class="boot-screen" tabindex="-1"><span class="institution-mark"><img class="institution-logo" src="{{ asset('images/logo-unpam.png') }}" width="300" height="291" alt="Logo Universitas Pamulang"></span><p>Menyiapkan ruang Anda...</p></main>
     </div>
     <div id="toasts" class="toast-region" aria-live="polite" aria-atomic="false"></div>

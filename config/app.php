@@ -54,6 +54,8 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    'frontend_api_credentials' => env('FRONTEND_API_CREDENTIALS', 'omit'),
+
     /*
     |--------------------------------------------------------------------------
     | Application Timezone

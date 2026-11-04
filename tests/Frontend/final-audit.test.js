@@ -73,25 +73,33 @@ test('legitimate query text containing dots, percent signs and URLs stays query 
 });
 
 test('API disallows redirects for credentials and private payloads', async () => {
-    const api = createApi({ fetcher: async (url, options) => {
-        assert.equal(options.redirect, 'error');
-        return response({ data: null });
-    } });
-    await api('/auth/login', { method: 'POST', body: { password: 'synthetic-password' } });
+    for (const credentials of ['omit', 'same-origin']) {
+        let request;
+        const api = createApi({ credentials, fetcher: async (url, options) => {
+            request = options;
+            throw new TypeError('redirect blocked: sensitive destination');
+        } });
+        await assert.rejects(api('/auth/login', { method: 'POST', body: { password: 'synthetic-password' } }),
+            (error) => error.code === 'NETWORK_ERROR' && !error.message.includes('sensitive'));
+        assert.equal(request.redirect, 'error');
+    }
 });
 
 test('API validates configured origin but supports same-origin deployment prefixes', async (t) => {
     const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
     Object.defineProperty(globalThis, 'location', { configurable: true, value: { origin: 'https://app.example.test' } });
     t.after(() => { if (previous) Object.defineProperty(globalThis, 'location', previous); else delete globalThis.location; });
-    let requests = 0;
-    for (const base of ['https://other.example.test/api/v1', '//other.example.test/api/v1', '/\\other.example.test/api/v1', 'https://user:password@app.example.test/api/v1', '/api/v1?next=', '/api/../v1']) {
-        const api = createApi({ base, fetcher: async () => { requests++; return response({ data: null }); } });
-        await assert.rejects(async () => api('/auth/me'), /Invalid API base/, base);
-    }
-    assert.equal(requests, 0);
-    for (const base of ['/api/v1', '/WebAplikasi/public/api/v1', 'https://app.example.test/WebAplikasi/public/api/v1']) {
-        await createApi({ base, fetcher: async (url) => { assert.equal(url, `${base}/auth/me`); return response({ data: {} }); } })('/auth/me');
+    for (const credentials of ['omit', 'same-origin']) {
+        let requests = 0; let tokens = 0;
+        for (const base of ['https://other.example.test/api/v1', '//other.example.test/api/v1', '/\\other.example.test/api/v1', 'https://user:password@app.example.test/api/v1', '/api/v1?next=', '/api/../v1']) {
+            const api = createApi({ base, credentials, token: () => { tokens++; return 'test-token'; }, fetcher: async () => { requests++; return response({ data: null }); } });
+            await assert.rejects(async () => api('/auth/me'), /Invalid API base/, base);
+        }
+        assert.equal(requests, 0);
+        assert.equal(tokens, 0);
+        for (const base of ['/api/v1', '/WebAplikasi/public/api/v1', 'https://app.example.test/WebAplikasi/public/api/v1']) {
+            await createApi({ base, credentials, fetcher: async (url) => { assert.equal(url, `${base}/auth/me`); return response({ data: {} }); } })('/auth/me');
+        }
     }
 });
 
@@ -164,14 +172,15 @@ class Element {
     append() {}
 }
 
-async function appHarness(logout = async () => ({ data: null })) {
+async function appHarness(logout = async () => ({ data: null }), credentials) {
     const root = new Element(); const dialog = new Element(); const storage = new Map([['rd.token', 'old-session']]);
-    const events = {}; const requests = []; let onError;
+    if (credentials !== undefined) root.dataset.apiCredentials = credentials;
+    const events = {}; const requests = []; let onError; let apiOptions;
     const never = new Promise(() => {});
     const location = { hash: '#/dashboard' };
     const scope = vm.createContext({
         ...ui, createVoiceManager, AbortController, URL, URLSearchParams, Intl, Date, location,
-        createApi: (options) => { onError = options.onError; return async (path) => {
+        createApi: (options) => { apiOptions = options; onError = options.onError; return async (path) => {
             requests.push(path);
             if (path === '/auth/logout') return logout();
             if (path === '/security/voice-warnings') return { data: { enabled: false, sounds: [] } };
@@ -186,7 +195,7 @@ async function appHarness(logout = async () => ({ data: null })) {
     vm.runInContext(source.replace(/^import .*;\n/gm, ''), scope);
     vm.runInContext("user = { id: 1, name: 'Synthetic User', role: 'student', permissions: [] }; shell();", scope);
     return {
-        root, dialog, storage, events, requests, location,
+        root, dialog, storage, events, requests, location, apiOptions,
         state: () => vm.runInContext('({ token, user, sessionNotice })', scope),
         setToken: (value) => { scope.newToken = value; vm.runInContext('token = newToken; store.set(token);', scope); },
         clearUser: () => vm.runInContext('user = null', scope),
@@ -200,6 +209,15 @@ async function appHarness(logout = async () => ({ data: null })) {
         },
     };
 }
+
+test('app bootstrap forwards credentials configuration and leaves a missing attribute at the client default', async () => {
+    for (const credentials of [undefined, 'omit', 'same-origin']) {
+        const app = await appHarness(undefined, credentials);
+        assert.equal(app.apiOptions.credentials, credentials);
+        assert.equal(app.apiOptions.base, '/api/v1');
+        assert.equal(app.apiOptions.token(), 'old-session');
+    }
+});
 
 test('failed logout still clears private local state and warns that server revocation is unconfirmed', async () => {
     const app = await appHarness(async () => { throw new Error('synthetic offline failure'); });

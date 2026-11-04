@@ -67,7 +67,7 @@ function expireSession(message = 'Sesi Anda telah berakhir. Silakan masuk kembal
     root.innerHTML = '';
     if (location.hash === '#/login') render(); else location.hash = '/login';
 }
-const api = createApi({ base: root.dataset.apiBase, token: () => token, onError(error, path) {
+const api = createApi({ base: root.dataset.apiBase, credentials: root.dataset.apiCredentials, token: () => token, onError(error, path) {
     if (error.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/auth/register')) { expireSession(); return; }
     if (error.code === 'ACCOUNT_DISABLED' && token) { expireSession('Akun tidak aktif. Hubungi administrator sistem.'); return; }
     if (error.status === 403 || error.code === 'SECURITY_COOLDOWN') {

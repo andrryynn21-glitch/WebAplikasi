@@ -10,7 +10,8 @@ export class ApiError extends Error {
 const localPath = (value) => typeof value === 'string' && /^\/(?!\/)[A-Za-z0-9._/-]*$/.test(value)
     && !value.includes('//') && !value.split('/').some((part) => part === '.' || part === '..');
 
-export function createApi({ base = '/api/v1', token = () => null, fetcher = (...args) => fetch(...args), onError = () => {} } = {}) {
+export function createApi({ base = '/api/v1', credentials = 'omit', token = () => null, fetcher = (...args) => fetch(...args), onError = () => {} } = {}) {
+    if (!['omit', 'same-origin'].includes(credentials)) throw new Error('Invalid API credentials');
     return async function api(path, { method = 'GET', body, signal, binary = false } = {}) {
         if (typeof path !== 'string' || !localPath(path.split('?')[0]) || /[\\#\u0000-\u0020\u007f]/.test(path)) throw new Error('Invalid API path');
         const origin = globalThis.location?.origin;
@@ -28,7 +29,7 @@ export function createApi({ base = '/api/v1', token = () => null, fetcher = (...
         if (body !== undefined && !multipart) headers['Content-Type'] = 'application/json';
         let response;
         try {
-            response = await fetcher(`${base}${path}`, { method, headers, signal, credentials: 'omit', cache: 'no-store', redirect: 'error', body: body === undefined ? undefined : multipart ? body : JSON.stringify(body) });
+            response = await fetcher(`${base}${path}`, { method, headers, signal, credentials, cache: 'no-store', redirect: 'error', body: body === undefined ? undefined : multipart ? body : JSON.stringify(body) });
         } catch (error) {
             ensureCurrent();
             if (error.name === 'AbortError') throw error;

@@ -14,7 +14,40 @@ test('API uses current bearer token, JSON envelope, no cookies and no cache', as
     assert.equal(request[1].headers['Content-Type'], 'application/json');
     assert.equal(request[1].credentials, 'omit');
     assert.equal(request[1].cache, 'no-store');
+    assert.equal(request[1].redirect, 'error');
     assert.deepEqual(JSON.parse(request[1].body), { title: 'Example' });
+});
+test('explicit credentials mode applies to JSON and private blobs without changing bearer or transport guards', async () => {
+    for (const credentials of ['omit', 'same-origin']) {
+        let calls = 0;
+        const api = createApi({ credentials, token: () => 'test-token', fetcher: async (url, options) => {
+            calls++;
+            assert.equal(options.credentials, credentials);
+            assert.equal(options.headers.Authorization, 'Bearer test-token');
+            assert.equal(options.cache, 'no-store');
+            assert.equal(options.redirect, 'error');
+            assert.ok(!url.includes('test-token'));
+            return url.endsWith('/attachments/1') ? new Response('private content') : response({ data: {} });
+        } });
+        await api('/reports');
+        assert.equal(await (await api('/attachments/1', { binary: true })).text(), 'private content');
+        assert.equal(calls, 2);
+    }
+});
+test('same-origin public requests do not invent an authorization header', async () => {
+    const api = createApi({ credentials: 'same-origin', fetcher: async (url, options) => {
+        assert.equal(options.credentials, 'same-origin');
+        assert.equal(options.headers.Authorization, undefined);
+        return response({ data: { enabled: false } });
+    } });
+    assert.equal((await api('/security/voice-warnings')).data.enabled, false);
+});
+test('include and invalid credentials modes are refused before token access or fetch', () => {
+    let calls = 0;
+    for (const credentials of ['include', '', 'Same-Origin', 'same-origin ', null, false, 0, {}, ['same-origin']]) {
+        assert.throws(() => createApi({ credentials, token: () => { calls++; }, fetcher: () => { calls++; } }), /Invalid API credentials/);
+    }
+    assert.equal(calls, 0);
 });
 test('multipart preserves FormData without forcing Content-Type', async () => {
     const body = new FormData(); body.append('title', 'Report');
@@ -48,14 +81,18 @@ test('network failures and cancelled navigation remain distinct', async () => {
     await assert.rejects(abort('/reports'), (e) => e.name === 'AbortError');
 });
 test('private downloads require successful response and return a Blob', async () => {
-    const api = createApi({ fetcher: async () => new Response('private content', { status: 200 }) });
+    const api = createApi({ fetcher: async (url, options) => { assert.equal(options.credentials, 'omit'); return new Response('private content', { status: 200 }); } });
     assert.equal(await (await api('/attachments/1', { binary: true })).text(), 'private content');
     const denied = createApi({ fetcher: async () => response({ error: { code: 'FORBIDDEN' } }, 403) });
     await assert.rejects(denied('/attachments/1', { binary: true }), (e) => e.status === 403);
 });
 test('client rejects external or traversing API destinations', async () => {
-    const api = createApi({ fetcher: () => { throw new Error('must not fetch'); } });
-    for (const path of ['https://evil.test', '//evil.test', '/../secret']) await assert.rejects(api(path), /Invalid API path/);
+    for (const credentials of ['omit', 'same-origin']) {
+        let calls = 0;
+        const api = createApi({ credentials, token: () => { calls++; }, fetcher: () => { calls++; } });
+        for (const path of ['https://evil.test', '//evil.test', '/../secret']) await assert.rejects(api(path), /Invalid API path/);
+        assert.equal(calls, 0);
+    }
 });
 test('an aborted old response cannot invalidate a new session', async () => {
     const controller = new AbortController(); let denied = false;
