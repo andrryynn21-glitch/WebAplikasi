@@ -1,5 +1,62 @@
 # Deployment Readiness Ruang Dengar
 
+## Target Aktif: InfinityFree (Promt21)
+
+Pada 4 November 2026 pengguna mengalihkan target dari alwaysdata ke **InfinityFree**
+dan mengizinkan penyesuaian, pengujian, lalu deployment ke akun yang sudah dibuat.
+Rekomendasi alwaysdata di bawah dipertahankan sebagai konteks historis, bukan
+target deployment aktif. Belum ada domain publik aplikasi yang terverifikasi.
+
+Audit paket awal: 6.770 file + 960 direktori, 29.454.574 byte isi file. Tidak ada
+symlink atau file melewati batas yang diperiksa (PHP/JS/HTML 1 MB, `.htaccess`
+10 kB, lainnya 10 MB). Hosting mengiklankan PHP 8.4 dan MySQL/MariaDB, tetapi
+versi patch minimal 8.4.1, ekstensi, inode tersedia, upload/memori, SSL, dan izin
+direktori **harus diperiksa pada akun sebenarnya**.
+
+### Paket Khusus InfinityFree
+
+- `.github/package-infinityfree.php` membangun ZIP dari runtime CI bersih, bukan
+  dari direktori kerja atau instalasi live. Input yang berisi `.env`, dump,
+  private upload, cache konfigurasi, symlink, atau file terlalu besar ditolak.
+- Archive mempertahankan struktur `public/`, sehingga front controller dan
+  lokasi manifest Vite tidak berubah. Isinya ditujukan untuk root `htdocs`.
+- `.github/infinityfree.htaccess` mengarahkan URL publik ke `public/` dan menolak
+  akses internal. Setiap direktori privat juga mendapat `Require all denied`.
+  Tidak ada alias publik ke storage, installer web, atau endpoint Artisan.
+- `.github/infinityfree.env.example` adalah template tanpa kredensial, dipasang
+  sebagai `.env.production.example` dalam ZIP. Jangan memakai template hostname
+  alwaysdata untuk InfinityFree. Database sessions/cache tidak membutuhkan Redis.
+- Gunakan checksum ZIP. Jika File Manager tidak mendukung ekstraksi ZIP dengan
+  aman, ekstrak lokal dan transfer melalui FTP/FTPS yang didukung akun. Jangan
+  mengunggah script ekstraktor publik atau meninggalkan ZIP di webroot.
+- Upload aturan proteksi lebih dahulu, kemudian uji file canary sintetis dalam
+  setiap direktori privat. **Jangan kirim `.env`, SQL, atau data pengguna sebelum
+  proteksi dibuktikan melalui HTTPS.** Jika rewrite/deny tidak bekerja, hentikan
+  deployment, bukan menonaktifkan proteksi.
+
+### Database Dan Aktivasi
+
+InfinityFree tidak menyediakan SSH untuk alur Artisan biasa. Siapkan schema dan
+katalog pada database lokal **baru yang terisolasi**, tanpa menyalin database
+aplikasi, demo user, token, KTM, atau pengaduan. Import hanya database kosong yang
+sudah dikonfirmasi melalui phpMyAdmin. Jangan menaruh SQL di `htdocs`.
+
+Super Admin pertama memerlukan provisioning terpisah yang menjaga validasi
+password, pengecekan admin pertama, audit, dan kerahasiaan kredensial. Jangan
+mengubah command bootstrap menjadi endpoint HTTP atau menonaktifkan autentikasi.
+Nama/email operator, database target, dan langkah ini belum dieksekusi.
+
+Sesi Chrome yang sudah login tidak otomatis memberikan akses otomasi. Pada
+pemeriksaan awal, Chrome menolak Apple Events JavaScript. Tanpa pengaktifan
+sementara oleh pengguna atau akses FTP/dashboard alternatif yang aman, akun,
+domain, database, dan kemampuan server tidak dapat diverifikasi. Tidak ada
+password/token yang perlu dikirim di chat atau dipublikasikan ke GitHub.
+
+Sumber: [fitur InfinityFree](https://www.infinityfree.com/) dan
+[panduan Laravel resmi](https://forum.infinityfree.com/t/how-to-install-a-laravel-site-on-infinityfree/118578).
+
+---
+
 ## Pembaruan Persiapan: 4 November 2026
 
 Pengguna melalui `Promt20.md` mengizinkan publikasi kode ke repository

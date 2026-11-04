@@ -43,6 +43,8 @@
 *.pfx
 *.tar.gz
 *.tgz
+/ruang-dengar-infinityfree-*.zip
+/ruang-dengar-infinityfree-*.zip.sha256
 /vendor
 _ide_helper.php
 Homestead.json

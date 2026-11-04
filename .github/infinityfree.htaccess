@@ -1,0 +1,37 @@
+# Install at htdocs/.htaccess; keep the application and its public/ subtree intact.
+Options -Indexes -MultiViews
+
+<IfModule !mod_rewrite.c>
+    Require all denied
+</IfModule>
+
+# Authorization checks also apply when public/.htaccess replaces parent rewrites.
+# Reject ambiguous/double-encoded path separators and traversal before routing.
+<If "%{THE_REQUEST} =~ m#(?i)\s[^?\s]*(?:%2e|%2f|%5c|%25|%00|%3f|%23|\\\\)#">
+    Require all denied
+</If>
+
+# These path segments are never public, including through the public/ prefix.
+<If "%{REQUEST_URI} =~ m#(?i)(?:^|/)(?:\.|(?:app|bootstrap|config|database|resources|routes|storage|vendor)(?:/|$))#">
+    Require all denied
+</If>
+<If "%{REQUEST_URI} =~ m#(?i)(?:^|/)(?:artisan|composer\.(?:json|lock)|package(?:-lock)?\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)(?:/|$)#">
+    Require all denied
+</If>
+<If "%{REQUEST_URI} =~ m#(?i)(?:^|/)[^/]+\.(?:sql|sqlite3?|db|dump|zip|tar|tgz|gz|bz2|xz|7z|rar|bak|backup|ini|conf|config|env|log|ya?ml|toml)(?:[./]|$)#">
+    Require all denied
+</If>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # No existing root file/directory other than public/ may be served.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^(?!public(?:/|$)).+ - [F,L]
+
+    RewriteRule ^(?:public/?)?$ public/index.php [L]
+    # Stop re-prefixing on internal rewrites; public/.htaccess still runs.
+    RewriteRule ^public/ - [L]
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
