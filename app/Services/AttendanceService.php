@@ -80,7 +80,7 @@ class AttendanceService
             $this->audit->record(AuditAction::AttendanceCourseSaved, $actor, $course, $class->id, $course->only(['code', 'name', 'is_active']));
 
             return $course->refresh()->loadCount('sessions');
-        });
+        }, 3);
     }
 
     public function sessions(ClassRoom $class, array $filters = []): Builder
@@ -171,7 +171,7 @@ class AttendanceService
             $this->recordEvent($session, $actor, $class, AuditAction::AttendanceCreated);
 
             return $this->detail($class, $session->id);
-        });
+        }, 3);
     }
 
     public function save(User $actor, int $id, array $data): array
@@ -198,7 +198,7 @@ class AttendanceService
             $this->recordEvent($session, $actor, $class, AuditAction::AttendanceUpdated);
 
             return $this->detail($class, $id);
-        });
+        }, 3);
     }
 
     public function transition(User $actor, int $id, int $version, bool $finalize, ?string $reason = null): array
@@ -220,7 +220,7 @@ class AttendanceService
             $this->recordEvent($session, $actor, $class, $finalize ? AuditAction::AttendanceFinalized : AuditAction::AttendanceReopened, $reason);
 
             return $this->detail($class, $id);
-        });
+        }, 3);
     }
 
     public function summary(ClassRoom $class, array $filters): array

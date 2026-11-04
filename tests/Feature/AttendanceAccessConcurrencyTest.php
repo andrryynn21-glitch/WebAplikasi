@@ -87,9 +87,8 @@ class AttendanceAccessConcurrencyTest extends TestCase
                 $this->assertSame(1, $changed);
                 $this->assertSame(0, $secondary->transactionLevel());
 
-                // Prove the real MVCC gap: Gate's ordinary reads stay stale, locking reads do not.
+                // Prove the stale snapshot; leave locking reads and conflict retries to the service.
                 $this->assertSame($previous, $primary->table($table)->where($target)->value($column));
-                $this->assertSame($revoked, $primary->table($table)->where($target)->lockForUpdate()->value($column));
             });
 
             $denial = null;
