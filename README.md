@@ -2,6 +2,9 @@
 
 Aplikasi Laravel untuk pengaduan privat, aspirasi bersama, dan absensi dalam lingkup kelas. Frontend Ruang Dengar menggunakan Blade, JavaScript ES modules, Vite, dan Tailwind CSS. Halaman `/` menyajikan aplikasi dengan navigasi hash, dashboard sesuai role, dan integrasi API yang tersedia, bukan lagi halaman welcome Laravel.
 
+**Aplikasi online:** https://ruang-dengar.infinityfreeapp.com/ (InfinityFree, diverifikasi 5 November 2026).
+Deployment memakai database baru, bukan data pengguna lokal. Pemulihan password melalui email belum aktif karena SMTP belum dikonfigurasi; batas pilot dan hasil verifikasi tersedia dalam dokumen deployment di bawah.
+
 - Kontrak endpoint, validasi, scope, dan contoh JSON: [docs/API.md](docs/API.md).
 - Setup frontend, route, endpoint yang dipakai, privasi sesi, hasil pengujian, dan batas integrasi: [docs/FRONTEND.md](docs/FRONTEND.md).
 - Audit final, perbaikan, hasil E2E nyata, risiko tersisa, dan checklist demo: [docs/AUDIT.md](docs/AUDIT.md).

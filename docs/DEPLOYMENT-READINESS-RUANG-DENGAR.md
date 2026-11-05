@@ -5,13 +5,56 @@
 Pada 4 November 2026 pengguna mengalihkan target dari alwaysdata ke **InfinityFree**
 dan mengizinkan penyesuaian, pengujian, lalu deployment ke akun yang sudah dibuat.
 Rekomendasi alwaysdata di bawah dipertahankan sebagai konteks historis, bukan
-target deployment aktif. Belum ada domain publik aplikasi yang terverifikasi.
+target deployment aktif. Domain publik sudah diverifikasi pada 5 November 2026:
+**https://ruang-dengar.infinityfreeapp.com/**.
+
+### Hasil Deployment: 5 November 2026
+
+- Akun Free terpisah dibuat atas pilihan pengguna. Situs kasir yang sudah ada
+  tidak disentuh; tidak ada paket berbayar atau pembelian.
+- Server aktual: PHP **8.4.27**, MariaDB **11.4.13**, GD JPEG/PNG dan seluruh
+  ekstensi wajib tersedia. HTTPS bawaan subdomain berfungsi dengan sertifikat
+  valid, memori PHP 512M, upload per file 20M, dan POST maksimal 30M.
+- Aplikasi membatasi pengaduan ke 5 lampiran, masing-masing 8 MiB, total
+  **25 MiB** melalui `REPORT_MAX_TOTAL_BYTES=26214400`. Metadata, UI, validasi
+  sebelum request, dan backend menggunakan batas yang sama.
+- `FRONTEND_API_CREDENTIALS=same-origin` diaktifkan khusus hosting ini karena
+  verifikasi browser InfinityFree memerlukan cookie first-party. Default aplikasi
+  tetap `omit`; `include` ditolak, URL lintas origin ditolak, dan autentikasi API
+  tetap Bearer. Cookie tanpa Bearer terbukti mendapat HTTP 401.
+- Runtime memakai kode commit `2e50f07`: paket awal CI `78c3971`, lalu delta enam
+  file dari source committed dan build produksi yang diuji. Hash file lama di
+  server diperiksa sebelum pembaruan; APP_KEY, database, dan storage tidak direset.
+- Transfer memakai File Manager HTTPS resmi beserta fitur Upload & Unzip milik
+  penyedia, bukan installer atau ekstraktor PHP publik. FTP server menolak AUTH
+  TLS sebelum password dikirim; koneksi FTP plaintext dari laptop tidak dipakai.
+- Database baru diimpor melalui phpMyAdmin HTTPS: 43 tabel dan katalog normal.
+  Saat inisialisasi hanya ada satu Super Admin baru dan audit penetapannya, tanpa
+  akun demo, pengaduan, KTM, lampiran, kelas, atau token dari database laptop.
+- Regresi: **208 tes PHP**, **78 tes frontend**, serta CI MySQL 8.4, MariaDB 11.8,
+  dan PHP 8.4/MariaDB 11.4 lulus. [CI runtime](https://github.com/andrryynn21-glitch/WebAplikasi/actions/runs/41891722285).
+- Pengujian situs nyata: **19 pemeriksaan** login/logout, dashboard, halaman
+  administratif, aset HTTPS, dan viewport 320/390/768/1440 lulus tanpa page error.
+  Tujuh pemeriksaan URL privat tidak mengembalikan isi file: kode/storage ditolak
+  dengan 403; request `.env` tertentu diputus hosting tanpa isi respons.
+- Sepuluh file probe/canary sementara sudah dihapus. Proteksi `.htaccess`,
+  konfigurasi rahasia, database, dan file aplikasi dipertahankan.
+
+**Batas operasional:** situs online untuk penggunaan awal/pilot, bukan pernyataan
+bahwa seluruh kesiapan operasional selesai. SMTP belum tersedia; pemulihan
+password email sengaja tidak diaktifkan, dan guard aplikasi mencegah pencatatan
+tautan reset ke log. Kebijakan retensi, malware scanning, backup/restore data baru,
+dan penanggung jawab operasional tetap perlu ditetapkan sebelum menerima data
+mahasiswa nyata. Hosting gratis tidak memberi jaminan kapasitas atau SLA aplikasi.
+
+Kredensial baru, APP_KEY, SQL awal, dan bukti verifikasi disimpan hanya pada folder
+lokal privat `output/deployment/infinityfree/private/` yang diabaikan Git. Jangan
+memublikasikan folder tersebut atau menaruh SQL di webroot.
 
 Audit paket awal: 6.770 file + 960 direktori, 29.454.574 byte isi file. Tidak ada
 symlink atau file melewati batas yang diperiksa (PHP/JS/HTML 1 MB, `.htaccess`
-10 kB, lainnya 10 MB). Hosting mengiklankan PHP 8.4 dan MySQL/MariaDB, tetapi
-versi patch minimal 8.4.1, ekstensi, inode tersedia, upload/memori, SSL, dan izin
-direktori **harus diperiksa pada akun sebenarnya**.
+10 kB, lainnya 10 MB). Hasil pemeriksaan akun sebenarnya dicatat di atas; kuota
+dan kemampuan server perlu diperiksa ulang jika berpindah akun atau hosting.
 
 ### Paket Khusus InfinityFree
 
@@ -44,12 +87,14 @@ sudah dikonfirmasi melalui phpMyAdmin. Jangan menaruh SQL di `htdocs`.
 Super Admin pertama memerlukan provisioning terpisah yang menjaga validasi
 password, pengecekan admin pertama, audit, dan kerahasiaan kredensial. Jangan
 mengubah command bootstrap menjadi endpoint HTTP atau menonaktifkan autentikasi.
-Nama/email operator, database target, dan langkah ini belum dieksekusi.
+Bootstrap ini sudah dijalankan melalui terminal lokal terisolasi menggunakan
+command asli dan prompt tersembunyi, kemudian diimpor ke database baru. Password
+dan key tidak dimasukkan ke Git, chat, atau endpoint publik.
 
 Sesi Chrome yang sudah login tidak otomatis memberikan akses otomasi. Pada
-pemeriksaan awal, Chrome menolak Apple Events JavaScript. Tanpa pengaktifan
-sementara oleh pengguna atau akses FTP/dashboard alternatif yang aman, akun,
-domain, database, dan kemampuan server tidak dapat diverifikasi. Tidak ada
+pemeriksaan awal, Chrome menolak Apple Events JavaScript. Pengguna kemudian
+mengaktifkannya, sehingga deployment dilanjutkan melalui sesi akun miliknya.
+Pengaturan tersebut dapat dimatikan kembali setelah pekerjaan selesai. Tidak ada
 password/token yang perlu dikirim di chat atau dipublikasikan ke GitHub.
 
 Sumber: [fitur InfinityFree](https://www.infinityfree.com/) dan
@@ -65,7 +110,7 @@ memilih **alwaysdata Free**. Batas izin lama di bawah adalah catatan audit histo
 bukan status persetujuan saat ini. Izin ini tidak mencakup paket berbayar atau
 publikasi database, akun, kredensial, KTM, laporan, dan identitas mahasiswa lokal.
 
-**Status: persiapan deployment, belum ada URL aplikasi publik yang diverifikasi.**
+**Status historis sebelum target dialihkan: persiapan deployment alwaysdata.**
 Akun alwaysdata terverifikasi dan akses SSH masih diperlukan. Gunakan
 [pendaftaran Free](https://www.alwaysdata.com/en/register/?p=2012), bukan trial Plus.
 Form registrasi saat pemeriksaan meminta verifikasi kartu tanpa biaya; pengguna
