@@ -31,6 +31,7 @@ enum AuditAction: string
     case PasswordResetRequested = 'password_reset_requested';
     case PasswordResetCompleted = 'password_reset_completed';
     case AttendanceCourseSaved = 'attendance_course_saved';
+    case AttendanceRosterUpdated = 'attendance_roster_updated';
     case AttendanceCreated = 'attendance_created';
     case AttendanceUpdated = 'attendance_updated';
     case AttendanceFinalized = 'attendance_finalized';
@@ -66,6 +67,7 @@ enum AuditAction: string
             self::PasswordResetRequested => 'Pemulihan password diminta',
             self::PasswordResetCompleted => 'Password dipulihkan',
             self::AttendanceCourseSaved => 'Mata kuliah absensi disimpan',
+            self::AttendanceRosterUpdated => 'Daftar mahasiswa absensi diperbarui',
             self::AttendanceCreated => 'Pertemuan absensi dibuat',
             self::AttendanceUpdated => 'Draf absensi disimpan',
             self::AttendanceFinalized => 'Absensi difinalisasi',

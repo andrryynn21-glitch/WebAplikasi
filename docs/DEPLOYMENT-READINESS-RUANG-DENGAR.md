@@ -1,5 +1,27 @@
 # Deployment Readiness Ruang Dengar
 
+## Promt23: Perubahan Lokal Absensi
+
+Perubahan 6 November 2026 memisahkan daftar mahasiswa absensi dari akun dan
+keanggotaan aplikasi. Ketua mengisi nama/NIM manual, satu per satu atau melalui
+tempel daftar. Mata kuliah dapat dibuat langsung bersama pertemuan, kode dan
+nomor pertemuan dapat otomatis, dan semester disalin ke snapshot pertemuan.
+
+Migrasi baru: `2026_11_06_144857_add_manual_attendance_roster`. Riwayat lama
+dipetakan ke identitas `attendance_students` per kelas/pengguna tanpa mengubah
+nama, NIM, status, catatan, atau timestamp snapshot lama. Anggota aplikasi yang
+belum pernah tercatat dalam absensi tidak otomatis menjadi daftar manual.
+
+**Belum diterapkan ke InfinityFree.** Migrasi hanya diaktifkan pada database
+lokal yang telah diverifikasi. Sebelum deployment hosting, backup database dan
+file privat, hentikan penulisan absensi sementara, lalu terapkan upgrade schema
+dan backend/frontend sebagai satu rilis. Payload penyimpanan sekarang memakai
+`records.*.student_id`, bukan `user_id`; tab lama harus dimuat ulang. DDL MySQL
+tidak sepenuhnya transaksional, jadi jangan menjalankan upgrade sambil menerima
+penyimpanan dari versi lama. Jangan mengimpor ulang SQL awal atau menjalankan
+`migrate:fresh`. Rollback migrasi ditolak jika sudah ada mahasiswa manual agar
+daftar tanpa akun tidak hilang. Format CSV lama tetap dipertahankan.
+
 ## Target Aktif: InfinityFree (Promt21)
 
 Pada 4 November 2026 pengguna mengalihkan target dari alwaysdata ke **InfinityFree**

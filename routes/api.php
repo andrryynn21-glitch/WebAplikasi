@@ -93,6 +93,9 @@ Route::middleware(['auth:sanctum', 'active', 'throttle:api'])->group(function ()
     Route::prefix('attendance')->name('attendance.')->middleware('permission:attendance.manage')->group(function () {
         Route::get('/', [AttendanceController::class, 'index'])->name('index');
         Route::post('/courses', [AttendanceController::class, 'storeCourse'])->name('courses.store');
+        Route::get('/students', [AttendanceController::class, 'students'])->name('students.index');
+        Route::post('/students', [AttendanceController::class, 'storeStudents'])->name('students.store');
+        Route::patch('/students/{student}', [AttendanceController::class, 'updateStudent'])->whereNumber('student')->name('students.update');
         Route::patch('/courses/{course}', [AttendanceController::class, 'updateCourse'])->whereNumber('course')->name('courses.update');
         Route::get('/sessions', [AttendanceController::class, 'sessions'])->name('sessions.index');
         Route::post('/sessions', [AttendanceController::class, 'store'])->name('sessions.store');

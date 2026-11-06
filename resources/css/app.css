@@ -297,6 +297,7 @@ dialog p { color: var(--muted); font-size: 13px; }
 .attendance-class { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 22px; }
 .attendance-class p { margin-top: 8px; font-size: 12px; }
 .attendance-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.attendance-fieldset[hidden], [data-cancel-student][hidden] { display: none; }
 .attendance-counts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
 .attendance-count { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #f8faf4; }
 .attendance-count strong { display: block; font-size: 25px; line-height: 1.3; font-weight: 500; }

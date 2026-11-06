@@ -21,11 +21,41 @@ class AttendanceController extends Controller
 
         return $this->respond([
             'class' => $this->attendance->classData($class),
-            'courses' => AttendanceCourse::query()->where('class_id', $class->id)->withCount('sessions')
+            'courses' => AttendanceCourse::query()->where('class_id', $class->id)->withCount('sessions')->withMax('sessions', 'meeting_number')
                 ->orderByDesc('is_active')->orderBy('name')->orderBy('id')->get()->map(fn ($course) => $this->courseData($course)),
             'roster' => $this->attendance->roster($class),
             'timezone' => 'Asia/Jakarta', 'today' => now('Asia/Jakarta')->toDateString(),
         ], 'Ruang absensi kelas Anda.');
+    }
+
+    public function students(Request $request): JsonResponse
+    {
+        return $this->respond($this->attendance->students($this->attendance->classFor($request->user())), 'Daftar mahasiswa absensi, terpisah dari akun aplikasi.');
+    }
+
+    public function storeStudents(Request $request): JsonResponse
+    {
+        $this->attendance->classFor($request->user());
+        $data = $request->validate([
+            'students' => ['required', 'array', 'list', 'min:1', 'max:100'],
+            'students.*' => ['required', 'array:name,nim'],
+            'students.*.name' => ['required', 'string', 'max:255'],
+            'students.*.nim' => ['nullable', 'string', 'max:32'],
+        ], ['students.*.name.required' => 'Nama mahasiswa wajib diisi.']);
+
+        return $this->respond($this->attendance->addStudents($request->user(), $data['students']), 'Mahasiswa ditambahkan tanpa membuat akun aplikasi.', 201);
+    }
+
+    public function updateStudent(Request $request, int $student): JsonResponse
+    {
+        $this->attendance->classFor($request->user());
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'nim' => ['nullable', 'string', 'max:32'],
+            'is_active' => ['sometimes', 'boolean'],
+        ], ['name.required' => 'Nama mahasiswa wajib diisi.']);
+
+        return $this->respond($this->attendance->updateStudent($request->user(), $student, $data), 'Daftar mahasiswa disimpan. Riwayat absensi tidak berubah.');
     }
 
     public function storeCourse(Request $request): JsonResponse
@@ -130,12 +160,12 @@ class AttendanceController extends Controller
     private function courseInput(Request $request): array
     {
         return $request->validate([
-            'code' => ['required', 'string', 'max:32'],
+            'code' => ['nullable', 'string', 'max:32'],
             'name' => ['required', 'string', 'max:160'],
             'lecturer_name' => ['required', 'string', 'max:160'],
+            'semester' => ['nullable', 'integer', 'between:1,14'],
             'is_active' => ['sometimes', 'boolean'],
         ], [
-            'code.required' => 'Kode mata kuliah wajib diisi.',
             'name.required' => 'Nama mata kuliah wajib diisi.',
             'lecturer_name.required' => 'Nama dosen pengampu wajib diisi.',
         ]);
@@ -143,7 +173,8 @@ class AttendanceController extends Controller
 
     private function courseData(AttendanceCourse $course): array
     {
-        return $course->only(['id', 'code', 'name', 'lecturer_name', 'is_active', 'sessions_count']);
+        return $course->only(['id', 'code', 'name', 'lecturer_name', 'semester', 'is_active', 'sessions_count'])
+            + ['next_meeting_number' => ((int) $course->sessions_max_meeting_number) + 1];
     }
 
     private function filters(Request $request, bool $includeStatus = true): array

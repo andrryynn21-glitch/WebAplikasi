@@ -3,10 +3,10 @@
 namespace App\Services;
 
 use App\Enums\AuditAction;
-use App\Enums\UserRole;
 use App\Models\AttendanceCourse;
 use App\Models\AttendanceRecord;
 use App\Models\AttendanceSession;
+use App\Models\AttendanceStudent;
 use App\Models\ClassRoom;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -15,6 +15,7 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AttendanceService
@@ -47,7 +48,7 @@ class AttendanceService
     public function classData(ClassRoom $class): array
     {
         return [
-            ...$class->only(['id', 'code', 'name']),
+            ...$class->only(['id', 'code', 'name', 'semester']),
             'academic_term' => [
                 ...$class->academicTerm->only(['id', 'code', 'name']),
                 'starts_on' => $class->academicTerm->starts_on->toDateString(),
@@ -56,14 +57,63 @@ class AttendanceService
         ];
     }
 
-    public function roster(ClassRoom $class): Collection
+    public function roster(ClassRoom $class, bool $lock = false): Collection
     {
-        return $class->activeMemberships()
-            ->whereHas('user', fn (Builder $q) => $q->where('is_active', true)->where('identity_status', 'verified')
-                ->whereHas('role', fn (Builder $role) => $role->whereIn('key', [UserRole::Student->value, UserRole::ClassLeader->value])))
-            ->with('user:id,name,nim')->get()
-            ->map(fn ($member) => ['user_id' => $member->user_id, 'name' => $member->user->name, 'nim' => $member->nim ?? $member->user->nim])
-            ->sortBy('name', SORT_NATURAL | SORT_FLAG_CASE)->values();
+        return AttendanceStudent::query()->where('class_id', $class->id)->where('is_active', true)
+            ->when($lock, fn (Builder $query) => $query->lockForUpdate())->orderBy('name')->orderBy('id')->get()
+            ->map(fn ($student) => ['student_id' => $student->id, 'user_id' => $student->user_id, 'name' => $student->name, 'nim' => $student->nim]);
+    }
+
+    public function students(ClassRoom $class): Collection
+    {
+        return AttendanceStudent::query()->where('class_id', $class->id)->orderByDesc('is_active')->orderBy('name')->orderBy('id')->get()
+            ->map(fn ($student) => $student->only(['id', 'user_id', 'name', 'nim', 'is_active']));
+    }
+
+    public function addStudents(User $actor, array $rows): array
+    {
+        return DB::transaction(function () use ($actor, $rows): array {
+            $class = $this->classFor($actor, true);
+            // Current reads include writes committed while this transaction waited for the class lock.
+            $activeCount = AttendanceStudent::query()->where('class_id', $class->id)->where('is_active', true)->lockForUpdate()->get(['id'])->count();
+            if ($activeCount + count($rows) > 1000) {
+                throw ValidationException::withMessages(['students' => 'Maksimal 1.000 mahasiswa aktif dalam daftar absensi kelas.']);
+            }
+            $created = [];
+            foreach ($rows as $index => $row) {
+                $nim = trim($row['nim'] ?? '');
+                $nim = $nim === '' ? null : $nim;
+                if ($nim !== null && AttendanceStudent::query()->where('class_id', $class->id)->where('nim', $nim)->lockForUpdate()->first(['id']) !== null) {
+                    throw ValidationException::withMessages(["students.{$index}.nim" => 'NIM sudah ada dalam daftar kelas, termasuk arsip. Edit atau aktifkan kembali mahasiswa tersebut.']);
+                }
+                $student = AttendanceStudent::create(['class_id' => $class->id, 'name' => trim($row['name']), 'nim' => $nim, 'is_active' => true]);
+                $created[] = ['id' => $student->id, 'user_id' => null, 'name' => $student->name, 'nim' => $student->nim, 'is_active' => true];
+            }
+            $this->audit->record(AuditAction::AttendanceRosterUpdated, $actor, $class, $class->id);
+
+            return $created;
+        }, 3);
+    }
+
+    public function updateStudent(User $actor, int $id, array $data): array
+    {
+        return DB::transaction(function () use ($actor, $id, $data): array {
+            $class = $this->classFor($actor, true);
+            $student = AttendanceStudent::query()->where('class_id', $class->id)->lockForUpdate()->findOrFail($id);
+            $nim = array_key_exists('nim', $data) ? trim($data['nim'] ?? '') : ($student->nim ?? '');
+            $nim = $nim === '' ? null : $nim;
+            if ($nim !== null && $nim !== $student->nim && AttendanceStudent::query()->where('class_id', $class->id)->where('nim', $nim)->whereKeyNot($id)->lockForUpdate()->first(['id']) !== null) {
+                throw ValidationException::withMessages(['nim' => 'NIM sudah digunakan mahasiswa lain dalam daftar kelas.']);
+            }
+            if (! $student->is_active && ($data['is_active'] ?? false)
+                && AttendanceStudent::query()->where('class_id', $class->id)->where('is_active', true)->lockForUpdate()->get(['id'])->count() >= 1000) {
+                throw ValidationException::withMessages(['is_active' => 'Maksimal 1.000 mahasiswa aktif dalam daftar absensi kelas.']);
+            }
+            $student->fill(['name' => trim($data['name']), 'nim' => $nim, 'is_active' => $data['is_active'] ?? $student->is_active])->save();
+            $this->audit->record(AuditAction::AttendanceRosterUpdated, $actor, $student, $class->id);
+
+            return $student->only(['id', 'user_id', 'name', 'nim', 'is_active']);
+        }, 3);
     }
 
     public function saveCourse(User $actor, array $data, ?int $id = null): AttendanceCourse
@@ -72,14 +122,17 @@ class AttendanceService
             $class = $this->classFor($actor, true);
             $course = $id === null ? new AttendanceCourse(['class_id' => $class->id])
                 : AttendanceCourse::query()->where('class_id', $class->id)->lockForUpdate()->findOrFail($id);
+            $code = trim($data['code'] ?? '');
+            $data['code'] = $code !== '' ? $code : ($course->code ?? 'MK-'.Str::upper(Str::random(8)));
+            $data['semester'] = $data['semester'] ?? $course->semester ?? $class->semester;
             if (AttendanceCourse::query()->where('class_id', $class->id)->where('code', $data['code'])
-                ->when($id !== null, fn (Builder $q) => $q->whereKeyNot($id))->exists()) {
+                ->when($id !== null, fn (Builder $q) => $q->whereKeyNot($id))->lockForUpdate()->first(['id']) !== null) {
                 throw ValidationException::withMessages(['code' => 'Kode mata kuliah sudah digunakan di kelas ini.']);
             }
             $course->fill($data)->save();
             $this->audit->record(AuditAction::AttendanceCourseSaved, $actor, $course, $class->id, $course->only(['code', 'name', 'is_active']));
 
-            return $course->refresh()->loadCount('sessions');
+            return $course->refresh()->loadCount('sessions')->loadMax('sessions', 'meeting_number');
         }, 3);
     }
 
@@ -115,11 +168,11 @@ class AttendanceService
 
     public function detail(ClassRoom $class, int $id): array
     {
-        $session = $this->withDetails($this->sessions($class))->with(['records' => fn ($q) => $q->orderBy('name')->orderBy('user_id'),
+        $session = $this->withDetails($this->sessions($class))->with(['records' => fn ($q) => $q->orderBy('name')->orderBy('student_id'),
             'events' => fn ($q) => $q->orderBy('id'), 'events.actor:id,name'])->findOrFail($id);
 
         return $this->sessionData($session) + [
-            'records' => $session->records->map(fn (AttendanceRecord $r) => $r->only(['user_id', 'name', 'nim', 'status', 'note'])),
+            'records' => $session->records->map(fn (AttendanceRecord $r) => $r->only(['student_id', 'user_id', 'name', 'nim', 'status', 'note'])),
             'history' => $session->events->map(fn ($event) => [
                 'action' => $event->action, 'actor' => $event->actor?->only(['id', 'name']),
                 'created_at' => $event->created_at->toIso8601String(), 'reason' => $event->reason,
@@ -135,8 +188,8 @@ class AttendanceService
         }
 
         return [
-            ...$session->only(['id', 'course_id', 'meeting_number', 'topic', 'notes', 'status', 'version', 'lecturer_name']),
-            'course' => ['id' => $session->course_id, 'code' => $session->course_code, 'name' => $session->course_name, 'lecturer_name' => $session->lecturer_name],
+            ...$session->only(['id', 'course_id', 'meeting_number', 'semester', 'topic', 'notes', 'status', 'version', 'lecturer_name']),
+            'course' => ['id' => $session->course_id, 'code' => $session->course_code, 'name' => $session->course_name, 'lecturer_name' => $session->lecturer_name, 'semester' => $session->semester],
             'held_on' => $session->held_on->toDateString(),
             'day_name' => $session->held_on->locale('id')->isoFormat('dddd'),
             'starts_at' => $session->starts_at ? substr($session->starts_at, 0, 5) : null,
@@ -154,17 +207,24 @@ class AttendanceService
     {
         return DB::transaction(function () use ($actor, $data) {
             $class = $this->classFor($actor, true);
-            $course = AttendanceCourse::query()->where('class_id', $class->id)->lockForUpdate()->findOrFail($data['course_id']);
+            $roster = $this->roster($class, true);
+            if ($roster->isEmpty() || $roster->count() > 1000) {
+                throw ValidationException::withMessages(['roster' => 'Tambahkan 1 sampai 1.000 mahasiswa ke daftar absensi. Mereka tidak perlu memiliki akun.']);
+            }
+            $course = isset($data['course_id'])
+                ? AttendanceCourse::query()->where('class_id', $class->id)->lockForUpdate()->findOrFail($data['course_id'])
+                : $this->saveCourse($actor, $data['course']);
             if (! $course->is_active) {
                 throw ValidationException::withMessages(['course_id' => 'Aktifkan kembali mata kuliah sebelum membuat pertemuan.']);
             }
+            $data['course_id'] = $course->id;
+            $data['meeting_number'] ??= (AttendanceSession::query()->where('course_id', $course->id)
+                ->orderByDesc('meeting_number')->lockForUpdate()->first(['meeting_number'])?->meeting_number ?? 0) + 1;
             $this->validateMeeting($class, $course->id, $data);
-            $roster = $this->roster($class);
-            if ($roster->isEmpty() || $roster->count() > 1000) {
-                throw ValidationException::withMessages(['course_id' => 'Kelas harus memiliki 1 sampai 1000 anggota mahasiswa aktif terverifikasi.']);
-            }
+            unset($data['course']);
             $session = new AttendanceSession([
                 ...$data, 'course_code' => $course->code, 'course_name' => $course->name, 'lecturer_name' => $course->lecturer_name,
+                'semester' => $course->semester,
             ]);
             $session->forceFill(['created_by' => $actor->id, 'updated_by' => $actor->id, 'status' => 'draft', 'version' => 1])->save();
             $session->records()->createMany($roster->all());
@@ -184,14 +244,14 @@ class AttendanceService
                 $this->conflict('Absensi sudah final. Buka koreksi dengan alasan sebelum mengubahnya.');
             }
             $this->validateMeeting($class, $session->course_id, $data, $id);
-            $records = $session->records()->lockForUpdate()->get()->keyBy('user_id');
-            $ids = collect($data['records'])->pluck('user_id')->map(fn ($id) => (int) $id);
+            $records = $session->records()->lockForUpdate()->get()->keyBy('student_id');
+            $ids = collect($data['records'])->pluck('student_id')->map(fn ($id) => (int) $id);
             if ($ids->count() !== $records->count() || $ids->unique()->count() !== $ids->count()
                 || $ids->diff($records->keys())->isNotEmpty()) {
                 throw ValidationException::withMessages(['records' => 'Daftar mahasiswa harus sama persis dengan daftar saat pertemuan dibuat. Muat ulang jika diperlukan.']);
             }
             foreach ($data['records'] as $record) {
-                $records[$record['user_id']]->update(['status' => $record['status'], 'note' => $record['note'] ?? null]);
+                $records[$record['student_id']]->update(['status' => $record['status'], 'note' => $record['note'] ?? null]);
             }
             unset($data['records'], $data['version']);
             $session->fill($data)->forceFill(['updated_by' => $actor->id, 'version' => $session->version + 1])->save();
@@ -232,11 +292,11 @@ class AttendanceService
             $students = [];
             $records = AttendanceRecord::query()->whereIn('session_id', $sessions->select('id'))->orderBy('id');
             foreach ($records->cursor() as $record) {
-                $students[$record->user_id] ??= ['user_id' => $record->user_id, ...$totals];
-                $students[$record->user_id]['name'] = $record->name;
-                $students[$record->user_id]['nim'] = $record->nim;
-                $students[$record->user_id][$record->status]++;
-                $students[$record->user_id]['total']++;
+                $students[$record->student_id] ??= ['student_id' => $record->student_id, 'user_id' => $record->user_id, ...$totals];
+                $students[$record->student_id]['name'] = $record->name;
+                $students[$record->student_id]['nim'] = $record->nim;
+                $students[$record->student_id][$record->status]++;
+                $students[$record->student_id]['total']++;
             }
             foreach ($students as &$student) {
                 foreach (array_keys($totals) as $key) {
@@ -261,8 +321,11 @@ class AttendanceService
         if ($data['held_on'] < $class->academicTerm->starts_on->toDateString() || $data['held_on'] > $class->academicTerm->ends_on->toDateString()) {
             throw ValidationException::withMessages(['held_on' => 'Tanggal pertemuan harus berada dalam periode akademik kelas.']);
         }
+        if (($data['meeting_number'] ?? 0) < 1 || $data['meeting_number'] > 100) {
+            throw ValidationException::withMessages(['meeting_number' => 'Nomor pertemuan harus 1 sampai 100.']);
+        }
         if (AttendanceSession::query()->where('course_id', $courseId)->where('meeting_number', $data['meeting_number'])
-            ->when($exceptId !== null, fn (Builder $q) => $q->whereKeyNot($exceptId))->exists()) {
+            ->when($exceptId !== null, fn (Builder $q) => $q->whereKeyNot($exceptId))->lockForUpdate()->first(['id']) !== null) {
             throw ValidationException::withMessages(['meeting_number' => 'Nomor pertemuan sudah digunakan untuk mata kuliah ini.']);
         }
     }

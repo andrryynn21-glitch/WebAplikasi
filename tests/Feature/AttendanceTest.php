@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Enums\IdentityStatus;
 use App\Enums\UserRole;
+use App\Models\ClassRoom;
 use App\Models\Permission;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -93,6 +94,8 @@ class AttendanceTest extends TestCase
         ];
 
         foreach ($disqualifications as $label => $disqualify) {
+            // Keep the expanded endpoint matrix out of the independent per-minute API throttle.
+            $this->travel(1)->minutes();
             $leader->forceFill(['identity_status' => IdentityStatus::Verified, 'is_active' => true])->save();
             $class->update(['is_active' => true]);
             $membership->update(['status' => 'active']);
@@ -110,11 +113,12 @@ class AttendanceTest extends TestCase
 
     public function test_foreign_courses_sessions_rosters_summaries_and_exports_cannot_escape_class_scope(): void
     {
-        [$class, $leader] = $this->leader();
+        [$class, $leader, $ownStudent] = $this->leader();
         $ownCourse = $this->course();
         [$otherClass] = $this->leader();
         $outsider = Domain::user(UserRole::Student, ['name' => 'Foreign roster secret', 'nim' => 'FOREIGN']);
         Domain::member($outsider, $otherClass);
+        $foreignStudent = $this->student($otherClass, ['name' => 'Foreign roster secret', 'nim' => 'FOREIGN']);
         $foreignCourse = $this->course(['code' => 'OTHER', 'name' => 'Foreign course secret']);
         $foreignSession = $this->finalizedSession($foreignCourse);
         $before = $this->attendanceState();
@@ -123,7 +127,11 @@ class AttendanceTest extends TestCase
         $index = $this->getJson(self::API.'?class_id='.$otherClass->id)->assertOk()
             ->assertJsonPath('data.class.id', $class->id)->assertJsonCount(1, 'data.courses')
             ->assertJsonPath('data.courses.0.id', $ownCourse['id'])->assertJsonCount(1, 'data.roster');
-        $this->assertSame([$leader->id], array_column($index->json('data.roster'), 'user_id'));
+        $this->assertSame([$ownStudent], array_column($index->json('data.roster'), 'student_id'));
+        $this->getJson(self::API.'/students?class_id='.$otherClass->id)->assertOk()
+            ->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $ownStudent);
+        $this->patchJson(self::API.'/students/'.$foreignStudent, ['name' => 'Stolen roster', 'is_active' => false])
+            ->assertNotFound()->assertJsonPath('error.code', 'NOT_FOUND');
         foreach (['/sessions', '/summary', '/export'] as $path) {
             $this->getJson(self::API.$path.'?course_id='.$foreignCourse['id'])
                 ->assertNotFound()->assertJsonPath('error.code', 'NOT_FOUND');
@@ -150,7 +158,7 @@ class AttendanceTest extends TestCase
         [$class, $leader] = $this->leader();
         $otherClass = Domain::classRoom();
         $this->postJson(self::API.'/courses', [])->assertUnprocessable()
-            ->assertJsonValidationErrors(['code', 'name', 'lecturer_name'], 'error.details');
+            ->assertJsonValidationErrors(['name', 'lecturer_name'], 'error.details');
         $course = $this->course(['class_id' => $otherClass->id]);
         $session = $this->createSession($course);
         $this->assertDatabaseHas('attendance_courses', ['id' => $course['id'], 'class_id' => $class->id]);
@@ -162,7 +170,7 @@ class AttendanceTest extends TestCase
             ->assertUnprocessable()->assertJsonValidationErrors(['code'], 'error.details');
         $this->assertSame($before, $this->attendanceState());
 
-        $updated = $this->courseInput(['code' => 'IF101-NEW', 'name' => 'New course name', 'lecturer_name' => 'New lecturer']);
+        $updated = $this->courseInput(['code' => 'IF101-NEW', 'name' => 'New course name', 'lecturer_name' => 'New lecturer', 'semester' => 7]);
         $this->patchJson(self::API.'/courses/'.$course['id'], $updated)->assertOk()->assertJsonPath('data.name', 'New course name');
         $this->patchJson(self::API.'/courses/'.$course['id'], $updated + ['is_active' => false])
             ->assertOk()->assertJsonPath('data.is_active', false)->assertJsonPath('data.sessions_count', 1);
@@ -178,6 +186,10 @@ class AttendanceTest extends TestCase
         $this->patchJson(self::API.'/courses/'.$course['id'], $updated + ['is_active' => true])->assertOk();
         $newSession = $this->createSession($course, ['meeting_number' => 2]);
         $this->assertSame('New course name', $newSession['course']['name']);
+        $this->assertSame(5, $session['course']['semester']);
+        $this->assertSame(7, $newSession['course']['semester']);
+        $this->assertDatabaseHas('attendance_sessions', ['id' => $session['id'], 'semester' => 5]);
+        $this->assertDatabaseHas('attendance_courses', ['id' => $course['id'], 'semester' => 7]);
     }
 
     public function test_session_validation_returns_422_for_duplicate_meetings_term_dates_future_dates_and_invalid_times(): void
@@ -187,7 +199,7 @@ class AttendanceTest extends TestCase
         $class->academicTerm->update(['starts_on' => '2026-10-01', 'ends_on' => '2026-11-02']);
         $course = $this->course();
         $this->postJson(self::API.'/sessions', [])->assertUnprocessable()
-            ->assertJsonValidationErrors(['course_id', 'meeting_number', 'held_on'], 'error.details');
+            ->assertJsonValidationErrors(['course_id', 'held_on'], 'error.details');
         $session = $this->createSession($course, ['held_on' => '2026-10-01']);
         $before = $this->attendanceState();
         $invalid = [
@@ -229,11 +241,13 @@ class AttendanceTest extends TestCase
         $this->assertSame('2026-11-03', $today['held_on']);
     }
 
-    public function test_new_session_snapshots_only_eligible_students_and_never_marks_attendance_automatically(): void
+    public function test_new_session_snapshots_only_active_manual_students_and_never_marks_attendance_automatically(): void
     {
-        [$class, $leader] = $this->leader();
+        [$class, $leader, $firstStudent] = $this->leader();
         $student = Domain::user(UserRole::Student, ['name' => 'Eligible student', 'nim' => 'USER-NIM']);
         Domain::member($student, $class)->update(['nim' => '00001234']);
+        $manualStudent = $this->student($class, ['name' => 'Manual student', 'nim' => '00001234']);
+        $this->student($class, ['name' => 'Archived student', 'is_active' => false]);
         $excluded = [
             Domain::user(UserRole::Student, ['name' => 'Pending membership']),
             Domain::user(UserRole::Student, ['name' => 'Revoked membership']),
@@ -254,10 +268,10 @@ class AttendanceTest extends TestCase
         $course = $this->course();
 
         $index = $this->getJson(self::API)->assertOk()->assertJsonCount(2, 'data.roster');
-        $this->assertEqualsCanonicalizing([$leader->id, $student->id], array_column($index->json('data.roster'), 'user_id'));
+        $this->assertEqualsCanonicalizing([$firstStudent, $manualStudent], array_column($index->json('data.roster'), 'student_id'));
         $session = $this->createSession($course, [
             'status' => 'finalized', 'version' => 99, 'created_by' => $outsider->id,
-            'course_name' => 'Forged course', 'lecturer_name' => 'Forged lecturer',
+            'course_name' => 'Forged course', 'lecturer_name' => 'Forged lecturer', 'semester' => 14,
             'records' => [['user_id' => $outsider->id, 'status' => 'present']],
         ]);
 
@@ -266,34 +280,40 @@ class AttendanceTest extends TestCase
         $this->assertSame($leader->id, $session['created_by']['id']);
         $this->assertSame('Dr Original', $session['lecturer_name']);
         $this->assertSame(['total' => 2, 'unmarked' => 2, 'present' => 0, 'excused' => 0, 'sick' => 0, 'absent' => 0], $session['counts']);
-        $this->assertEqualsCanonicalizing([$leader->id, $student->id], array_column($session['records'], 'user_id'));
+        $this->assertEqualsCanonicalizing([$firstStudent, $manualStudent], array_column($session['records'], 'student_id'));
+        $this->assertSame(5, $session['course']['semester']);
         foreach ($session['records'] as $record) {
+            $this->assertArrayHasKey('user_id', $record);
+            $this->assertNull($record['user_id']);
             $this->assertNull($record['status']);
             $this->assertNull($record['note']);
             $this->assertDatabaseHas('attendance_records', ['session_id' => $session['id']] + $record);
         }
-        $this->assertDatabaseHas('attendance_records', ['session_id' => $session['id'], 'user_id' => $student->id, 'nim' => '00001234']);
+        $this->assertDatabaseHas('attendance_records', ['session_id' => $session['id'], 'student_id' => $manualStudent, 'user_id' => null, 'nim' => '00001234']);
         $this->assertDatabaseCount('attendance_records', 2);
     }
 
     public function test_save_returns_422_and_is_atomic_unless_every_snapshot_id_occurs_exactly_once(): void
     {
         [$class] = $this->leader();
-        Domain::member(Domain::user(UserRole::Student), $class);
-        $outsider = Domain::user(UserRole::Student);
-        Domain::member($outsider, Domain::classRoom());
+        $this->student($class, ['name' => 'Second student']);
+        $outsider = $this->student(Domain::classRoom(), ['name' => 'Foreign student']);
         $course = $this->course();
         $session = $this->createSession($course);
+        $lateStudent = $this->student($class, ['name' => 'Joined after snapshot']);
         $payload = $this->saveInput($session, ['topic' => 'Must not be saved']);
         $records = $payload['records'];
         $before = $this->attendanceState();
         $invalid = [
             'missing student' => [[$records[0]], 'records'],
-            'duplicate student' => [[$records[0], $records[0]], 'records.1.user_id'],
-            'foreign student' => [[$records[0], ['user_id' => $outsider->id, 'status' => 'absent']], 'records'],
-            'extra student' => [[...$records, ['user_id' => $outsider->id, 'status' => 'absent']], 'records'],
-            'missing status key' => [[$records[0], ['user_id' => $records[1]['user_id']]], 'records.1.status'],
-            'unknown status' => [[$records[0], ['user_id' => $records[1]['user_id'], 'status' => 'late']], 'records.1.status'],
+            'duplicate student' => [[$records[0], $records[0]], 'records.1.student_id'],
+            'foreign student' => [[$records[0], ['student_id' => $outsider, 'status' => 'absent']], 'records'],
+            'extra student' => [[...$records, ['student_id' => $outsider, 'status' => 'absent']], 'records'],
+            'same-class student outside snapshot' => [[$records[0], ['student_id' => $lateStudent, 'status' => 'absent']], 'records'],
+            'legacy user key' => [[$records[0], ['user_id' => $records[1]['student_id'], 'status' => 'absent']], 'records.1.student_id'],
+            'forged legacy reference' => [[$records[0], $records[1] + ['user_id' => 999]], 'records.1'],
+            'missing status key' => [[$records[0], ['student_id' => $records[1]['student_id']]], 'records.1.status'],
+            'unknown status' => [[$records[0], ['student_id' => $records[1]['student_id'], 'status' => 'late']], 'records.1.status'],
             'overlong note' => [[$records[0], $records[1] + ['note' => str_repeat('x', 501)]], 'records.1.note'],
             'forged snapshot name' => [[$records[0], $records[1] + ['name' => 'Forged name']], 'records.1'],
             'non-list records' => [[1 => $records[0], 2 => $records[1]], 'records'],
@@ -310,23 +330,24 @@ class AttendanceTest extends TestCase
     {
         [$class, $leader] = $this->leader();
         foreach (['A Student', 'B Student', 'C Student', 'D Student'] as $name) {
-            Domain::member(Domain::user(UserRole::Student, ['name' => $name]), $class);
+            $this->student($class, ['name' => $name]);
         }
         $course = $this->course();
         $otherCourse = $this->course(['code' => 'IF202']);
         $session = $this->createSession($course);
         $records = array_map(fn ($record, $status) => [
-            'user_id' => $record['user_id'], 'status' => $status, 'note' => 'Recorded explanation',
+            'student_id' => $record['student_id'], 'status' => $status, 'note' => 'Recorded explanation',
         ], $session['records'], ['present', 'excused', 'sick', 'absent', null]);
 
         $saved = $this->patchJson(self::API.'/sessions/'.$session['id'], $this->saveInput($session, [
             'records' => array_reverse($records), 'topic' => 'Transactions', 'notes' => 'Draft notes',
             'lecturer_name' => 'Substitute lecturer', 'course_id' => $otherCourse['id'],
-            'course_code' => 'FORGED', 'course_name' => 'FORGED', 'created_by' => 999,
+            'course_code' => 'FORGED', 'course_name' => 'FORGED', 'semester' => 14, 'created_by' => 999,
             'updated_by' => 999, 'status' => 'finalized', 'finalized_at' => now()->toIso8601String(),
         ]))->assertOk()->assertJsonPath('data.version', 2)->assertJsonPath('data.status', 'draft')
             ->assertJsonPath('data.course_id', $course['id'])->assertJsonPath('data.course.code', 'IF101')
-            ->assertJsonPath('data.course.name', 'Database Systems')->assertJsonPath('data.lecturer_name', 'Substitute lecturer')
+            ->assertJsonPath('data.course.name', 'Database Systems')->assertJsonPath('data.course.semester', 5)
+            ->assertJsonPath('data.lecturer_name', 'Substitute lecturer')
             ->assertJsonPath('data.finalized_at', null)->assertJsonPath('data.created_by.id', $leader->id)
             ->assertJsonPath('data.updated_by.id', $leader->id)->assertJsonPath('data.counts', [
                 'total' => 5, 'unmarked' => 1, 'present' => 1, 'excused' => 1, 'sick' => 1, 'absent' => 1,
@@ -418,11 +439,12 @@ class AttendanceTest extends TestCase
         $this->getJson(self::API.'/sessions/'.$session['id'])->assertOk()->assertJsonPath('data', $finalized);
     }
 
-    public function test_existing_snapshot_survives_membership_name_nim_and_course_changes(): void
+    public function test_existing_snapshot_and_manual_roster_survive_membership_name_nim_and_course_changes(): void
     {
         [$class] = $this->leader();
         $student = Domain::user(UserRole::Student, ['name' => 'Original student', 'nim' => '00000123']);
         $membership = Domain::member($student, $class);
+        $manualStudent = $this->student($class, ['name' => 'Original student', 'nim' => '00000123', 'user_id' => $student->id]);
         $course = $this->course();
         $original = $this->finalizedSession($course);
         $membership->update(['status' => 'revoked', 'nim' => 'NEW-MEMBERSHIP']);
@@ -430,13 +452,15 @@ class AttendanceTest extends TestCase
         Domain::member($student, Domain::classRoom());
         $newStudent = Domain::user(UserRole::Student, ['name' => 'New class member']);
         Domain::member($newStudent, $class);
-        $this->patchJson(self::API.'/courses/'.$course['id'], $this->courseInput(['name' => 'Renamed course', 'lecturer_name' => 'New lecturer']))->assertOk();
+        $this->patchJson(self::API.'/courses/'.$course['id'], $this->courseInput(['name' => 'Renamed course', 'lecturer_name' => 'New lecturer', 'semester' => 8]))->assertOk();
 
         $this->getJson(self::API.'/sessions/'.$original['id'])->assertOk()->assertJsonPath('data', $original);
         $next = $this->createSession($course, ['meeting_number' => 2]);
-        $this->assertContains($newStudent->id, array_column($next['records'], 'user_id'));
-        $this->assertNotContains($student->id, array_column($next['records'], 'user_id'));
+        $this->assertNotContains($newStudent->id, array_column($next['records'], 'user_id'));
+        $this->assertContains($manualStudent, array_column($next['records'], 'student_id'));
+        $this->assertSame('Original student', array_column($next['records'], null, 'student_id')[$manualStudent]['name']);
         $this->assertSame('Renamed course', $next['course']['name']);
+        $this->assertSame(8, $next['course']['semester']);
         $reopened = $this->postJson(self::API.'/sessions/'.$original['id'].'/reopen', [
             'version' => $original['version'], 'reason' => 'Correct the historical snapshot.',
         ])->assertOk()->json('data');
@@ -448,30 +472,29 @@ class AttendanceTest extends TestCase
 
     public function test_summary_counts_finalized_snapshots_with_historical_denominators_and_course_date_filters(): void
     {
-        [$class, $leader] = $this->leader();
-        $departing = Domain::user(UserRole::Student, ['name' => 'Departing student']);
-        $membership = Domain::member($departing, $class);
+        [$class, , $firstStudent] = $this->leader();
+        $departing = $this->student($class, ['name' => 'Departing student']);
         $course = $this->course();
-        $first = $this->finalizedSession($course, 1, '2026-10-10', [$leader->id => 'present', $departing->id => 'excused']);
-        $membership->update(['status' => 'revoked']);
-        $joining = Domain::user(UserRole::Student, ['name' => 'Joining student']);
-        Domain::member($joining, $class);
-        $this->finalizedSession($course, 2, '2026-10-20', [$leader->id => 'sick', $joining->id => 'absent']);
+        $first = $this->finalizedSession($course, 1, '2026-10-10', [$firstStudent => 'present', $departing => 'excused']);
+        DB::table('attendance_students')->where('id', $departing)->update(['is_active' => false]);
+        $joining = $this->student($class, ['name' => 'Joining student']);
+        $this->finalizedSession($course, 2, '2026-10-20', [$firstStudent => 'sick', $joining => 'absent']);
         $secondCourse = $this->course(['code' => 'IF202']);
-        $this->finalizedSession($secondCourse, 1, '2026-10-30', [$leader->id => 'present', $joining->id => 'present']);
+        $this->finalizedSession($secondCourse, 1, '2026-10-30', [$firstStudent => 'present', $joining => 'present']);
         $draft = $this->createSession($course, ['meeting_number' => 3, 'held_on' => '2026-11-01']);
         $this->patchJson(self::API.'/sessions/'.$draft['id'], $this->saveInput($draft))->assertOk();
 
         $summary = $this->getJson(self::API.'/summary')->assertOk()->assertJsonPath('data.sessions_count', 3)
             ->assertJsonPath('data.totals', ['present' => 3, 'excused' => 1, 'sick' => 1, 'absent' => 1, 'total' => 6, 'attendance_rate' => 50])
             ->assertJsonCount(3, 'data.students')->json('data');
-        $students = array_column($summary['students'], null, 'user_id');
-        $this->assertSame(3, $students[$leader->id]['total']);
-        $this->assertSame(66.67, $students[$leader->id]['attendance_rate']);
-        $this->assertSame(1, $students[$departing->id]['total']);
-        $this->assertSame(0, $students[$departing->id]['attendance_rate']);
-        $this->assertSame(2, $students[$joining->id]['total']);
-        $this->assertSame(50, $students[$joining->id]['attendance_rate']);
+        $students = array_column($summary['students'], null, 'student_id');
+        $this->assertSame([null, null, null], array_column($summary['students'], 'user_id'));
+        $this->assertSame(3, $students[$firstStudent]['total']);
+        $this->assertSame(66.67, $students[$firstStudent]['attendance_rate']);
+        $this->assertSame(1, $students[$departing]['total']);
+        $this->assertSame(0, $students[$departing]['attendance_rate']);
+        $this->assertSame(2, $students[$joining]['total']);
+        $this->assertSame(50, $students[$joining]['attendance_rate']);
         $this->getJson(self::API.'/summary?course_id='.$course['id'])->assertOk()->assertJsonPath('data.sessions_count', 2)
             ->assertJsonPath('data.totals.attendance_rate', 25)->assertJsonPath('data.totals.total', 4);
         $this->getJson(self::API.'/summary?'.http_build_query(['course_id' => $course['id'], 'date_from' => '2026-10-20', 'date_to' => '2026-10-20']))
@@ -514,13 +537,14 @@ class AttendanceTest extends TestCase
 
     public function test_csv_export_preserves_nims_and_neutralizes_formulas_in_every_text_column(): void
     {
-        [$class, $leader] = $this->leader();
+        [$class, , $firstStudent] = $this->leader();
         $class->update(['name' => '=CLASS()']);
         $class->academicTerm->update(['name' => '+TERM()']);
-        $leader->update(['name' => '@Leader', 'nim' => '00000001']);
-        $leader->memberships()->update(['nim' => '00000001']);
-        foreach ([['=FORMULA()', '=001'], ['+Formula', '0002'], ['-Formula', '0003'], ["\t=Hidden", '0004'], ["\r@Hidden", '0005'], ['Comma, "Quoted"', '0006']] as [$name, $nim]) {
-            Domain::member(Domain::user(UserRole::Student, ['name' => $name, 'nim' => $nim]), $class);
+        DB::table('attendance_students')->where('id', $firstStudent)->update(['name' => '@Leader', 'nim' => '00000001']);
+        $this->postJson(self::API.'/students', ['students' => [['name' => '=FORMULA()', 'nim' => '=001']]])
+            ->assertCreated();
+        foreach ([['+Formula', '0002'], ['-Formula', '0003'], ["\t=Hidden", '0004'], ["\r@Hidden", '0005'], ['Comma, "Quoted"', '0006']] as [$name, $nim]) {
+            $this->student($class, ['name' => $name, 'nim' => $nim]);
         }
         $course = $this->course(['name' => '-COURSE()', 'lecturer_name' => '@LECTURER()']);
         $this->finalizedSession($course, 1, '2026-10-20');
@@ -557,14 +581,141 @@ class AttendanceTest extends TestCase
         $this->assertSame('Comma, "Quoted"', $rows["'0006"][7]);
     }
 
+    public function test_blank_course_codes_are_generated_and_blank_updates_preserve_code_and_default_semester(): void
+    {
+        [$class] = $this->leader();
+        $class->update(['semester' => 9]);
+        $this->getJson(self::API)->assertOk()->assertJsonPath('data.class.semester', 9);
+        $input = ['name' => 'Automatic code', 'lecturer_name' => 'Course lecturer'];
+        $first = $this->postJson(self::API.'/courses', $input)->assertCreated()
+            ->assertJsonPath('data.semester', 9)->assertJsonPath('data.next_meeting_number', 1)->json('data');
+        $second = $this->postJson(self::API.'/courses', $input + ['code' => '   ', 'semester' => 14])->assertCreated()
+            ->assertJsonPath('data.semester', 14)->json('data');
+
+        $this->assertNotSame('', $first['code']);
+        $this->assertNotSame($first['code'], $second['code']);
+        foreach (['', null] as $code) {
+            $this->patchJson(self::API.'/courses/'.$first['id'], $input + ['code' => $code])->assertOk()
+                ->assertJsonPath('data.code', $first['code'])->assertJsonPath('data.semester', 9);
+        }
+        $this->assertDatabaseHas('attendance_courses', ['id' => $first['id'], 'code' => $first['code'], 'semester' => 9]);
+    }
+
+    public function test_course_semester_returns_422_outside_one_to_fourteen_without_writes(): void
+    {
+        $this->leader();
+        $course = $this->course(['semester' => 1]);
+        $before = $this->attendanceState();
+
+        foreach ([0, 15, 1.5, 'invalid'] as $semester) {
+            $this->postJson(self::API.'/courses', $this->courseInput(['code' => 'NEW', 'semester' => $semester]))
+                ->assertUnprocessable()->assertJsonValidationErrors(['semester'], 'error.details');
+            $this->patchJson(self::API.'/courses/'.$course['id'], $this->courseInput(['semester' => $semester]))
+                ->assertUnprocessable()->assertJsonValidationErrors(['semester'], 'error.details');
+            $this->assertSame($before, $this->attendanceState());
+        }
+    }
+
+    public function test_default_meeting_uses_course_maximum_not_count_and_returns_422_after_one_hundred(): void
+    {
+        $this->leader();
+        $course = $this->course();
+        $first = $this->postJson(self::API.'/sessions', ['course_id' => $course['id'], 'held_on' => '2026-10-20'])
+            ->assertCreated()->assertJsonPath('data.meeting_number', 1)->json('data');
+        $this->createSession($course, ['meeting_number' => 8]);
+        $this->getJson(self::API)->assertOk()->assertJsonPath('data.courses.0.next_meeting_number', 9);
+        $this->postJson(self::API.'/sessions', ['course_id' => $course['id'], 'meeting_number' => null, 'held_on' => '2026-10-20'])
+            ->assertCreated()->assertJsonPath('data.meeting_number', 9);
+        $this->patchJson(self::API.'/sessions/'.$first['id'], $this->saveInput($first, ['meeting_number' => 99]))->assertOk();
+        $this->getJson(self::API)->assertOk()->assertJsonPath('data.courses.0.next_meeting_number', 100);
+        $this->postJson(self::API.'/sessions', ['course_id' => $course['id'], 'held_on' => '2026-10-20'])
+            ->assertCreated()->assertJsonPath('data.meeting_number', 100);
+        $before = $this->attendanceState();
+
+        $this->postJson(self::API.'/sessions', ['course_id' => $course['id'], 'held_on' => '2026-10-20'])
+            ->assertUnprocessable()->assertJsonValidationErrors(['meeting_number'], 'error.details');
+        $this->assertSame($before, $this->attendanceState());
+        $differentCourse = $this->course(['code' => 'SECOND']);
+        $this->postJson(self::API.'/sessions', ['course_id' => $differentCourse['id'], 'held_on' => '2026-10-20'])
+            ->assertCreated()->assertJsonPath('data.meeting_number', 1);
+    }
+
+    public function test_inline_course_and_session_are_created_together_with_server_owned_snapshots(): void
+    {
+        [$class, $leader, $student] = $this->leader();
+        $otherClass = Domain::classRoom();
+
+        $session = $this->postJson(self::API.'/sessions', [
+            'course' => ['name' => 'Inline course', 'lecturer_name' => 'Inline lecturer', 'semester' => 6],
+            'held_on' => '2026-10-20', 'class_id' => $otherClass->id,
+            'created_by' => 999, 'status' => 'finalized', 'version' => 50,
+            'course_name' => 'Forged snapshot', 'semester' => 14,
+            'records' => [['student_id' => $student, 'user_id' => $leader->id, 'status' => 'present']],
+        ])->assertCreated()->assertJsonPath('data.meeting_number', 1)->assertJsonPath('data.version', 1)
+            ->assertJsonPath('data.status', 'draft')->assertJsonPath('data.created_by.id', $leader->id)
+            ->assertJsonPath('data.course.name', 'Inline course')->assertJsonPath('data.course.semester', 6)
+            ->assertJsonPath('data.lecturer_name', 'Inline lecturer')->assertJsonPath('data.records.0.status', null)
+            ->assertJsonPath('data.records.0.user_id', null)->json('data');
+
+        $this->assertDatabaseCount('attendance_courses', 1);
+        $this->assertDatabaseCount('attendance_sessions', 1);
+        $this->assertDatabaseHas('attendance_courses', [
+            'id' => $session['course_id'], 'class_id' => $class->id, 'name' => 'Inline course', 'semester' => 6,
+        ]);
+        $this->assertDatabaseHas('attendance_sessions', ['id' => $session['id'], 'semester' => 6, 'course_name' => 'Inline course']);
+        foreach (['attendance_course_saved', 'attendance_created'] as $action) {
+            $this->assertDatabaseHas('audit_logs', ['actor_id' => $leader->id, 'class_id' => $class->id, 'action' => $action]);
+        }
+        $this->assertNotSame('', $session['course']['code']);
+        $this->postJson(self::API.'/sessions', [
+            'course' => ['name' => 'Defaults', 'lecturer_name' => 'Default lecturer', 'code' => 'INLINE'], 'held_on' => '2026-10-21',
+        ])->assertCreated()->assertJsonPath('data.course.semester', 5)->assertJsonPath('data.course.code', 'INLINE');
+    }
+
+    public function test_inline_creation_returns_422_without_orphan_courses_or_audits_on_invalid_or_empty_roster_requests(): void
+    {
+        [$class] = $this->leader();
+        $course = $this->course();
+        $inline = ['course' => ['name' => 'Must roll back', 'lecturer_name' => 'Lecturer'], 'held_on' => '2026-10-20'];
+        $before = $this->attendanceState();
+
+        foreach ([
+            $inline + ['course_id' => $course['id']],
+            array_replace($inline, ['held_on' => '2026-09-01']),
+            array_replace($inline, ['held_on' => '2026-11-04']),
+            array_replace($inline, ['held_on' => '2026-02-30']),
+            array_replace($inline, ['course' => ['name' => 'Missing lecturer']]),
+            array_replace($inline, ['course' => ['name' => 'Bad semester', 'lecturer_name' => 'Lecturer', 'semester' => 15]]),
+            array_replace($inline, ['course' => ['name' => 'Bad code', 'lecturer_name' => 'Lecturer', 'code' => str_repeat('x', 33)]]),
+        ] as $payload) {
+            $this->postJson(self::API.'/sessions', $payload)->assertUnprocessable();
+            $this->assertSame($before, $this->attendanceState());
+        }
+
+        DB::table('attendance_students')->where('class_id', $class->id)->update(['is_active' => false]);
+        $before = $this->attendanceState();
+        $this->postJson(self::API.'/sessions', $inline)->assertUnprocessable();
+        $this->postJson(self::API.'/sessions', ['course_id' => $course['id'], 'held_on' => '2026-10-20'])->assertUnprocessable();
+        $this->assertSame($before, $this->attendanceState());
+    }
+
     private function leader(): array
     {
         $class = Domain::classRoom();
         $leader = Domain::user(UserRole::ClassLeader, ['name' => 'Class leader', 'nim' => 'LEADER-'.$class->id]);
         Domain::leader($leader, $class);
+        $student = $this->student($class, ['name' => 'First manual student', 'nim' => 'MANUAL-'.$class->id]);
         $this->actingAs($leader, 'sanctum');
 
-        return [$class, $leader];
+        return [$class, $leader, $student];
+    }
+
+    private function student(ClassRoom $class, array $overrides = []): int
+    {
+        return DB::table('attendance_students')->insertGetId(array_replace([
+            'class_id' => $class->id, 'user_id' => null, 'name' => 'Manual student', 'nim' => null,
+            'is_active' => true, 'created_at' => now(), 'updated_at' => now(),
+        ], $overrides));
     }
 
     private function courseInput(array $overrides = []): array
@@ -597,7 +748,7 @@ class AttendanceTest extends TestCase
             'held_on' => $session['held_on'] ?? '2026-10-20', 'starts_at' => $session['starts_at'] ?? null,
             'ends_at' => $session['ends_at'] ?? null, 'topic' => $session['topic'] ?? null, 'notes' => $session['notes'] ?? null,
             'lecturer_name' => $session['lecturer_name'] ?? 'Dr Original',
-            'records' => array_map(fn ($record) => ['user_id' => $record['user_id'], 'status' => 'present'], $session['records'] ?? []),
+            'records' => array_map(fn ($record) => ['student_id' => $record['student_id'], 'status' => 'present'], $session['records'] ?? []),
         ], $overrides);
     }
 
@@ -606,7 +757,7 @@ class AttendanceTest extends TestCase
         $session = $this->createSession($course, ['meeting_number' => $meeting, 'held_on' => $date]);
         $payload = $this->saveInput($session);
         foreach ($payload['records'] as &$record) {
-            $record['status'] = $statuses[$record['user_id']] ?? 'present';
+            $record['status'] = $statuses[$record['student_id']] ?? 'present';
         }
         unset($record);
         $saved = $this->patchJson(self::API.'/sessions/'.$session['id'], $payload)->assertOk()->json('data');
@@ -618,6 +769,9 @@ class AttendanceTest extends TestCase
     {
         return [
             ['GET', '', []],
+            ['GET', '/students', []],
+            ['POST', '/students', ['students' => [['name' => 'Denied addition', 'nim' => 'DENIED']]]],
+            ['PATCH', '/students/'.($session['records'][0]['student_id'] ?? 1), ['name' => 'Denied edit', 'is_active' => false]],
             ['POST', '/courses', $this->courseInput(['code' => 'DENIED'])],
             ['PATCH', '/courses/'.$course['id'], $this->courseInput()],
             ['GET', '/sessions', []],
@@ -634,7 +788,7 @@ class AttendanceTest extends TestCase
     private function attendanceState(): array
     {
         $state = [];
-        foreach (['attendance_courses', 'attendance_sessions', 'attendance_records', 'attendance_events'] as $table) {
+        foreach (['attendance_students', 'attendance_courses', 'attendance_sessions', 'attendance_records', 'attendance_events'] as $table) {
             $state[$table] = DB::table($table)->orderBy('id')->get()->map(fn ($row) => (array) $row)->all();
         }
         $state['audit_logs'] = DB::table('audit_logs')->where('action', 'like', 'attendance_%')

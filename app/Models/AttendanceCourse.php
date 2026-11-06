@@ -7,12 +7,12 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['class_id', 'code', 'name', 'lecturer_name', 'is_active'])]
+#[Fillable(['class_id', 'code', 'name', 'lecturer_name', 'semester', 'is_active'])]
 class AttendanceCourse extends Model
 {
     protected function casts(): array
     {
-        return ['is_active' => 'boolean'];
+        return ['is_active' => 'boolean', 'semester' => 'integer'];
     }
 
     public function classRoom(): BelongsTo

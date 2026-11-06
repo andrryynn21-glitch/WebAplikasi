@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attendanceCounts, attendanceDay, attendanceFilters, attendancePage, attendanceRate, matchesAttendanceStudent, serializeAttendanceCourse, serializeAttendanceSession } from '../../resources/js/pages/attendance.js';
+import { attendanceCounts, attendanceDay, attendanceFilters, attendancePage, attendanceRate, matchesAttendanceStudent, parseAttendanceStudents, serializeAttendanceCourse, serializeAttendanceSession, serializeAttendanceStudent } from '../../resources/js/pages/attendance.js';
 import { navigation } from '../../resources/js/ui.js';
 
 const today = '2026-11-03';
 const leader = { role: 'class_leader', identity_status: 'verified', membership: { status: 'active' }, permissions: ['attendance.manage'] };
-const room = { id: 3, code: 'IF-A', name: 'Kelas A', academic_term: { id: 1, code: '2026-1', name: 'Ganjil 2026', starts_on: '2026-09-01', ends_on: '2027-02-01' } };
-const course = { id: 4, code: '001A', name: 'Algoritma', lecturer_name: 'Dosen Pengampu', is_active: true, sessions_count: 2 };
-const records = [{ user_id: 19, name: 'Nadia Putri', nim: '0019', status: null, note: null }, { user_id: 22, name: 'Bima', nim: '0022', status: 'sick', note: 'Istirahat' }];
+const room = { id: 3, code: 'IF-A', name: 'Kelas A', semester: 3, academic_term: { id: 1, code: '2026-1', name: 'Ganjil 2026', starts_on: '2026-09-01', ends_on: '2027-02-01' } };
+const course = { id: 4, code: '001A', name: 'Algoritma', lecturer_name: 'Dosen Pengampu', semester: 5, is_active: true, sessions_count: 2, next_meeting_number: 9 };
+const records = [{ student_id: 119, user_id: null, name: 'Nadia Putri', nim: '0019', status: null, note: null }, { student_id: 122, user_id: 22, name: 'Bima', nim: '0022', status: 'sick', note: 'Istirahat' }];
 const catalog = { class: room, courses: [course], roster: records, timezone: 'Asia/Jakarta', today };
 const session = { id: 10, course_id: 4, course, meeting_number: 2, held_on: today, day_name: 'Selasa', starts_at: '08:00', ends_at: '09:00', topic: 'Pengantar', notes: null, status: 'draft', version: 7, records, counts: attendanceCounts(records), history: [], created_at: '2026-11-03T00:00:00Z', updated_at: '2026-11-03T00:00:00Z', finalized_at: null, created_by: { id: 19, name: 'Nadia' }, updated_by: { id: 19, name: 'Nadia' } };
 const values = { course_id: '4', meeting_number: '2', held_on: today, starts_at: '08:00', ends_at: '09:00', topic: ' Pengantar ', notes: '', lecturer_name: ' Dosen Pengampu ', 'records.0.status': '', 'records.0.note': '', 'records.1.status': 'sick', 'records.1.note': ' Istirahat ' };
@@ -49,15 +49,44 @@ test('calendar dates and attendance rates preserve date-only and no-data semanti
     assert.equal(attendanceRate(83.3333), '83,33%');
 });
 
-test('course serialization retains textual codes, trims free-text lecturer and uses a boolean archive flag', () => {
-    const input = { code: ' 001A ', name: ' Algoritma ', lecturer_name: ' Dosen luar akun ', is_active: 'false', class_id: '99' };
-    assert.deepEqual(serializeAttendanceCourse(input), { code: '001A', name: 'Algoritma', lecturer_name: 'Dosen luar akun' });
+test('course serialization retains textual codes, trims lecturer, validates semester and uses a boolean archive flag', () => {
+    const input = { code: ' 001A ', name: ' Algoritma ', lecturer_name: ' Dosen luar akun ', semester: ' 5 ', is_active: 'false', class_id: '99' };
+    assert.deepEqual(serializeAttendanceCourse(input), { code: '001A', name: 'Algoritma', lecturer_name: 'Dosen luar akun', semester: 5 });
     assert.equal(serializeAttendanceCourse(input, true).is_active, false);
     assert.equal(serializeAttendanceCourse({ ...input, is_active: 'true' }, true).is_active, true);
     for (const [name, length] of [['code', 32], ['name', 160], ['lecturer_name', 160]]) {
-        assert.throws(() => serializeAttendanceCourse({ ...input, [name]: ' ' }), (error) => Object.hasOwn(error.details, name));
+        if (name !== 'code') assert.throws(() => serializeAttendanceCourse({ ...input, [name]: ' ' }), (error) => Object.hasOwn(error.details, name));
         assert.throws(() => serializeAttendanceCourse({ ...input, [name]: 'a'.repeat(length + 1) }), /maksimal/);
     }
+    for (const semester of ['0', '15', '1.5', 'NaN']) assert.throws(() => serializeAttendanceCourse({ ...input, semester }), /Semester mata kuliah/);
+    for (const editing of [false, true]) {
+        const body = serializeAttendanceCourse({ ...input, code: ' ', semester: '' }, editing);
+        assert.equal(Object.hasOwn(body, 'code'), false, 'blank code omitted for server autogeneration/preservation');
+        assert.equal(Object.hasOwn(body, 'semester'), false, 'blank semester uses server default');
+    }
+});
+
+test('manual students whitelist name and textual optional NIM without creating account identifiers', () => {
+    const input = { name: ' Nadia Putri ', nim: ' 0019 ', user_id: 19, student_id: 99, class_id: 3, role: 'super_admin', is_active: 'false' };
+    assert.deepEqual(serializeAttendanceStudent(input), { name: 'Nadia Putri', nim: '0019' });
+    assert.deepEqual(serializeAttendanceStudent({ name: 'Tanpa akun' }), { name: 'Tanpa akun', nim: '' });
+    assert.deepEqual(serializeAttendanceStudent(input, true), { name: 'Nadia Putri', nim: '0019', is_active: false });
+    assert.equal(serializeAttendanceStudent({ ...input, is_active: 'true' }, true).is_active, true);
+    for (const [name, value] of [['name', ' '], ['name', 'a'.repeat(256)], ['nim', '0'.repeat(33)]]) assert.throws(() => serializeAttendanceStudent({ ...input, [name]: value }), (error) => Object.hasOwn(error.details, name));
+});
+
+test('bulk paste supports semicolon or Tab with optional NIM, CRLF, blanks and leading zeros', () => {
+    assert.deepEqual(parseAttendanceStudents(' Nadia Putri ; 0019 \r\n Bima\t0022\n\nTanpa NIM\nNIM kosong;\n'), [
+        { name: 'Nadia Putri', nim: '0019' }, { name: 'Bima', nim: '0022' }, { name: 'Tanpa NIM', nim: '' }, { name: 'NIM kosong', nim: '' },
+    ]);
+    assert.equal(parseAttendanceStudents(Array.from({ length: 100 }, (_, i) => `Mahasiswa ${i};00${i}`).join('\n')).length, 100);
+});
+
+test('bulk paste rejects the entire batch for invalid rows, duplicate nonempty NIM or batch limits', () => {
+    for (const value of ['', ' \n\t ', 'Valid;001\n;002', 'Valid;001\nInvalid;002;extra', 'A;001\nB\t001', 'A;abc001\nB;ABC001', `Valid;001\n${'a'.repeat(256)}`, `Nama;${'0'.repeat(33)}`, Array(101).fill('Mahasiswa').join('\n')]) {
+        assert.throws(() => parseAttendanceStudents(value), (error) => Object.hasOwn(error.details, 'students'), value);
+    }
+    assert.throws(() => parseAttendanceStudents('Valid;001\n;002'), /Baris 2/);
 });
 
 test('creation includes only metadata and a numeric course ID, never roster or forged version', () => {
@@ -67,8 +96,17 @@ test('creation includes only metadata and a numeric course ID, never roster or f
 });
 
 test('draft serialization includes every fixed snapshot ID regardless of search and preserves null statuses', () => {
-    const body = serializeAttendanceSession({ ...values, roster_search: 'Nadia', course_id: '999', version: 123, 'records.0.user_id': '900', 'records.2.status': 'present' }, today, session);
-    assert.deepEqual(body, { version: 7, lecturer_name: 'Dosen Pengampu', meeting_number: 2, held_on: today, starts_at: '08:00', ends_at: '09:00', topic: 'Pengantar', notes: null, records: [{ user_id: 19, status: null, note: null }, { user_id: 22, status: 'sick', note: 'Istirahat' }] });
+    const body = serializeAttendanceSession({ ...values, roster_search: 'Nadia', course_id: '999', version: 123, 'records.0.student_id': '900', 'records.0.user_id': '900', 'records.2.status': 'present' }, today, session);
+    assert.deepEqual(body, { version: 7, lecturer_name: 'Dosen Pengampu', meeting_number: 2, held_on: today, starts_at: '08:00', ends_at: '09:00', topic: 'Pengantar', notes: null, records: [{ student_id: 119, status: null, note: null }, { student_id: 122, status: 'sick', note: 'Istirahat' }] });
+    assert.throws(() => serializeAttendanceSession(values, today, { ...session, records: [{ ...records[0], student_id: null }] }), /ID snapshot mahasiswa/);
+});
+
+test('quick course creation sends nested whitelisted fields and omits automatic meeting number', () => {
+    const body = serializeAttendanceSession({ course_id: 'new', held_on: today, meeting_number: '', 'course.name': ' Aljabar ', 'course.lecturer_name': ' Dosen tamu ', 'course.semester': '3', 'course.code': ' ', 'course.is_active': false, 'course.class_id': 99 }, today);
+    assert.deepEqual(body, { course: { name: 'Aljabar', lecturer_name: 'Dosen tamu', semester: 3 }, held_on: today, starts_at: null, ends_at: null, topic: null, notes: null });
+    assert.equal(Object.hasOwn(serializeAttendanceSession({ ...values, meeting_number: undefined }, today), 'meeting_number'), false);
+    assert.throws(() => serializeAttendanceSession({ ...values, course_id: 'new', 'course.name': 'Aljabar' }, today), (error) => Object.hasOwn(error.details, 'course.lecturer_name'));
+    assert.throws(() => serializeAttendanceSession({ ...values, meeting_number: '' }, today, session), /1 sampai 100/);
 });
 
 test('all four attendance statuses round-trip while missing or invalid dotted statuses are rejected', () => {
@@ -89,10 +127,11 @@ test('session validation rejects future/impossible dates, invalid meetings, and 
 class Control {
     constructor(value = '') { this.value = value; this.nodes = new Map(); this.events = {}; this.disabled = false; this.isConnected = true; this.innerHTML = ''; this.textContent = ''; this.hidden = false; this.dataset = {}; }
     querySelector(selector) { if (!this.nodes.has(selector)) this.nodes.set(selector, new Control()); return this.nodes.get(selector); }
-    querySelectorAll(selector) { return selector === '[data-student]' ? this.rows || [] : []; }
+    querySelectorAll(selector) { return this.collections?.[selector] || (selector === '[data-student]' ? this.rows || [] : []); }
     addEventListener(name, handler) { this.events[name] = handler; }
     reportValidity() { return true; }
     focus() {}
+    reset() { for (const control of Object.values(this.controls)) control.value = control.initialValue ?? ''; }
 }
 
 function harness({ user = leader, data = session, root = catalog, request } = {}) {
@@ -116,6 +155,14 @@ function harness({ user = leader, data = session, root = catalog, request } = {}
     const reopen = view.querySelector('[data-reopen]');
     reopen.controls = { reason: new Control('Koreksi berdasarkan bukti kehadiran') };
     reopen.elements = { namedItem: (name) => reopen.controls[name] };
+    for (const [selector, defaults] of [
+        ['[data-new-session]', { course_id: String(root.courses.find((item) => item.is_active)?.id || 'new'), meeting_number: '', held_on: root.today, starts_at: '', ends_at: '', topic: '', notes: '', 'course.name': '', 'course.lecturer_name': '', 'course.semester': String(root.class.semester), 'course.code': '' }],
+        ['[data-student-editor]', { mode: 'single', name: '', nim: '', is_active: 'true', students: '' }],
+    ]) {
+        const editor = view.querySelector(selector);
+        editor.controls = Object.fromEntries(Object.entries(defaults).map(([name, value]) => [name, Object.assign(new Control(value), { initialValue: value })]));
+        editor.elements = { namedItem: (name) => editor.controls[name] };
+    }
     return ctx;
 }
 
@@ -145,6 +192,174 @@ test('attendance stops rendering and fetching detail when the root request outli
     assert.equal(ctx.pages.length, 0);
 });
 
+test('empty manual roster is roster-first even for a verified registered class leader', async () => {
+    for (const route of [['attendance'], ['attendance', 'new']]) {
+        const ctx = harness({ root: { ...catalog, roster: [] } });
+        await attendancePage(ctx, route);
+        assert.match(ctx.pages[0].html, /Tambahkan mahasiswa terlebih dahulu/);
+        assert.match(ctx.pages[0].html, /href="#\/attendance\/students"/);
+        assert.ok(!ctx.pages[0].html.includes('href="#/classes"'));
+        assert.ok(!ctx.pages[0].html.includes('data-new-session'));
+        assert.equal(ctx.requests.some(([, options]) => options?.method), false);
+    }
+});
+
+test('manual add posts a name and leading-zero NIM without account or membership calls', async (t) => {
+    mockFormData(t);
+    const ctx = harness({ request: async (path) => path === '/attendance/students' ? { data: [] } : undefined });
+    await attendancePage(ctx, ['attendance', 'students']);
+    const form = ctx.view.querySelector('[data-student-editor]');
+    form.controls.name.value = ' Nadia tanpa akun ';
+    form.controls.nim.value = ' 001900 ';
+    form.events.input();
+    assert.equal(ctx.hasUnsavedChanges(), true);
+    await form.submit();
+    assert.deepEqual(ctx.requests.at(-1), ['/attendance/students', { method: 'POST', body: { students: [{ name: 'Nadia tanpa akun', nim: '001900' }] } }]);
+    assert.equal(ctx.hasUnsavedChanges(), false);
+    assert.equal(ctx.refreshes, 1);
+    assert.ok(ctx.requests.every(([path]) => path.startsWith('/attendance')));
+    assert.match(ctx.pages[0].html, /tidak membuat akun, keanggotaan kelas, atau verifikasi identitas/);
+});
+
+test('bulk form blocks invalid batches and retains all pasted rows after a server duplicate rejection', async (t) => {
+    mockFormData(t);
+    let fail = true;
+    const rejection = Object.assign(new Error('NIM sudah dipakai termasuk pada mahasiswa arsip.'), { status: 422, details: { 'students.1.nim': ['NIM sudah dipakai.'] } });
+    const ctx = harness({ request: async (path, options) => {
+        if (path !== '/attendance/students') return;
+        if (options?.method && fail) throw rejection;
+        return { data: [] };
+    } });
+    await attendancePage(ctx, ['attendance', 'students']);
+    const form = ctx.view.querySelector('[data-student-editor]');
+    form.controls.mode.value = 'bulk'; form.controls.mode.events.change(); form.events.change();
+    assert.equal(form.querySelector('[data-single-student]').disabled, true);
+    assert.equal(form.querySelector('[data-bulk-students]').disabled, false);
+    form.controls.students.value = 'Valid;001\n;002';
+    await assert.rejects(form.submit(), /Baris 2/);
+    assert.equal(ctx.requests.filter(([, options]) => options?.method).length, 0);
+    form.controls.students.value = 'Valid;001\nMahasiswa kedua\t002';
+    await assert.rejects(form.submit(), (error) => error === rejection);
+    assert.equal(form.controls.students.value, 'Valid;001\nMahasiswa kedua\t002');
+    assert.equal(form.querySelector('[data-student-fields]').disabled, false);
+    assert.equal(ctx.hasUnsavedChanges(), true);
+    assert.equal(ctx.refreshes, 0);
+    fail = false;
+    await form.submit();
+    assert.deepEqual(ctx.requests.at(-1)[1].body, { students: [{ name: 'Valid', nim: '001' }, { name: 'Mahasiswa kedua', nim: '002' }] });
+});
+
+test('student edit and archive use listed IDs, confirm archive, escape text and preserve pending input on cancel', async (t) => {
+    mockFormData(t);
+    const unsafe = '<img src=x onerror=alert(1)>';
+    const students = [{ id: 119, name: unsafe, nim: '0019', is_active: true }, { id: 122, name: 'Arsip', nim: '0022', is_active: false }];
+    const ctx = harness({ request: async (path) => path === '/attendance/students' ? { data: students } : undefined });
+    const button = new Control(); button.dataset.editStudent = '119';
+    ctx.view.collections = { '[data-edit-student]': [button] };
+    await attendancePage(ctx, ['attendance', 'students']);
+    assert.ok(!ctx.pages[0].html.includes(unsafe));
+    assert.match(ctx.pages[0].html, /1 aktif \/ 1 arsip/);
+    const form = ctx.view.querySelector('[data-student-editor]');
+    form.controls.name.value = 'Belum disimpan'; form.events.input();
+    ctx.confirmed = false;
+    await button.events.click();
+    assert.equal(form.controls.name.value, 'Belum disimpan');
+    ctx.confirmed = true;
+    await button.events.click();
+    assert.equal(form.controls.name.value, unsafe);
+    assert.equal(form.controls.mode.disabled, true);
+    form.controls.name.value = 'Nama dikoreksi'; form.controls.is_active.value = 'false'; form.events.change();
+    ctx.confirmed = false;
+    await form.submit();
+    assert.equal(ctx.requests.filter(([, options]) => options?.method).length, 0);
+    assert.equal(ctx.hasUnsavedChanges(), true);
+    ctx.confirmed = true;
+    await form.submit();
+    assert.deepEqual(ctx.requests.at(-1), ['/attendance/students/119', { method: 'PATCH', body: { name: 'Nama dikoreksi', nim: '0019', is_active: false } }]);
+    assert.equal(ctx.requests.some(([, options]) => options?.method === 'DELETE'), false);
+});
+
+test('new meeting defaults to today, selected lecturer and course semester with server max-plus-one numbering', async (t) => {
+    mockFormData(t);
+    const ctx = harness({ root: { ...catalog, courses: [course, { ...course, id: 8, name: 'Arsip rahasia', is_active: false }] } });
+    await attendancePage(ctx, ['attendance', 'new']);
+    const html = ctx.pages[0].html;
+    const form = ctx.view.querySelector('[data-new-session]');
+    assert.ok(!html.includes('Arsip rahasia'));
+    assert.match(html, /name="held_on"[^>]*value="2026-11-03"/);
+    assert.match(html, /name="course.semester"[^>]*value="3"/);
+    assert.match(html, /<details data-meeting-advanced>/);
+    assert.equal(form.querySelector('[data-course-info]').textContent, 'Dosen: Dosen Pengampu / Semester mata kuliah: 5');
+    assert.match(form.querySelector('[data-next-meeting]').textContent, /Pertemuan 9/);
+    assert.equal(form.querySelector('[data-inline-course]').disabled, true);
+    const folded = { open: false };
+    form.events.invalid({ target: { closest: () => folded } });
+    assert.equal(folded.open, true, 'native validation reveals a folded optional field');
+    await form.submit();
+    assert.deepEqual(ctx.requests.at(-1), ['/attendance/sessions', { method: 'POST', body: { course_id: 4, held_on: today, starts_at: null, ends_at: null, topic: null, notes: null } }]);
+    assert.equal(ctx.destination, '/attendance/sessions/10');
+});
+
+test('course catalog creation defaults semester and editing preserves blank code while confirming archive', async (t) => {
+    mockFormData(t);
+    const ctx = harness();
+    const create = new Control(); create.dataset.course = '';
+    const edit = new Control(); edit.dataset.course = '4';
+    for (const form of [create, edit]) form.controls = Object.fromEntries(Object.entries({ name: 'Algoritma', lecturer_name: 'Dosen Pengampu', semester: '3', code: '', is_active: 'false' }).map(([name, value]) => [name, new Control(value)]));
+    ctx.view.collections = { '[data-course]': [create, edit] };
+    await attendancePage(ctx, ['attendance', 'courses']);
+    assert.match(ctx.pages[0].html, /name="semester"[^>]*value="3"/);
+    await create.submit();
+    assert.deepEqual(ctx.requests.at(-1), ['/attendance/courses', { method: 'POST', body: { name: 'Algoritma', lecturer_name: 'Dosen Pengampu', semester: 3 } }]);
+    ctx.confirmed = false;
+    await edit.submit();
+    assert.equal(ctx.requests.filter(([, options]) => options?.method).length, 1);
+    ctx.confirmed = true;
+    await edit.submit();
+    assert.deepEqual(ctx.requests.at(-1), ['/attendance/courses/4', { method: 'PATCH', body: { name: 'Algoritma', lecturer_name: 'Dosen Pengampu', semester: 3, is_active: false } }]);
+});
+
+test('quick course works with an empty catalog, retains errors and clears guard only after successful creation', async (t) => {
+    mockFormData(t);
+    let fail = true;
+    const ctx = harness({ root: { ...catalog, courses: [] }, request: async (path, options) => {
+        if (options?.method && fail) throw Object.assign(new Error('Nama mata kuliah sudah dipakai.'), { status: 422 });
+    } });
+    await attendancePage(ctx, ['attendance', 'new']);
+    const form = ctx.view.querySelector('[data-new-session]');
+    assert.equal(form.querySelector('[data-inline-course]').disabled, false);
+    assert.match(form.querySelector('[data-next-meeting]').textContent, /Pertemuan 1/);
+    form.controls['course.name'].value = 'Aljabar'; form.controls['course.lecturer_name'].value = 'Dosen tamu'; form.events.input();
+    await assert.rejects(form.submit(), /sudah dipakai/);
+    assert.equal(form.controls['course.name'].value, 'Aljabar');
+    assert.equal(form.querySelector('fieldset').disabled, false);
+    assert.equal(ctx.hasUnsavedChanges(), true);
+    fail = false;
+    await form.submit();
+    assert.deepEqual(ctx.requests.at(-1)[1].body.course, { name: 'Aljabar', lecturer_name: 'Dosen tamu', semester: 3 });
+    assert.equal(ctx.requests.at(-1)[1].body.course_id, undefined);
+    assert.equal(ctx.hasUnsavedChanges(), false);
+    assert.equal(ctx.requests.some(([path]) => path === '/attendance/courses'), false);
+});
+
+test('course switching reuses stored metadata without submitting stale inline fields and blocks auto meeting 101', async (t) => {
+    mockFormData(t);
+    const ctx = harness({ root: { ...catalog, courses: [{ ...course, next_meeting_number: 101 }] } });
+    await attendancePage(ctx, ['attendance', 'new']);
+    const form = ctx.view.querySelector('[data-new-session]');
+    assert.match(form.querySelector('[data-next-meeting]').textContent, /batas 100/);
+    await assert.rejects(form.submit(), /melebihi 100/);
+    form.controls.course_id.value = 'new'; form.controls.course_id.events.change();
+    assert.equal(form.querySelector('[data-inline-course]').disabled, false);
+    assert.match(form.querySelector('[data-next-meeting]').textContent, /Pertemuan 1/);
+    form.controls['course.name'].value = 'Unsubmitted course';
+    form.controls.course_id.value = '4'; form.controls.course_id.events.change();
+    form.controls.meeting_number.value = '3';
+    await form.submit();
+    assert.equal(ctx.requests.at(-1)[1].body.course, undefined);
+    assert.equal(ctx.requests.at(-1)[1].body.meeting_number, 3);
+});
+
 test('draft renders escaped snapshot content, exact dotted fields, and unmarked first options', async () => {
     const unsafe = '<img src=x onerror=alert(1)>';
     const ctx = harness({ data: { ...session, course: { ...course, lecturer_name: unsafe }, records: [{ ...records[0], name: unsafe, note: unsafe }, records[1]], history: [{ action: 'attendance_reopened', actor: { name: unsafe }, created_at: session.created_at, reason: unsafe }] } });
@@ -160,6 +375,16 @@ test('draft renders escaped snapshot content, exact dotted fields, and unmarked 
     assert.ok(!html.includes('name="course_id"'));
     assert.deepEqual(ctx.requests.map(([path]) => path), ['/attendance', '/attendance/sessions/10']);
     assert.equal(ctx.view.querySelector('[data-session-form]').querySelector('[data-finalize]').disabled, true);
+});
+
+test('detail uses saved roster and semester snapshots, including students no longer active in the catalog', async () => {
+    const ctx = harness({ root: { ...catalog, roster: [], courses: [{ ...course, semester: 14 }] }, data: { ...session, semester: 5 } });
+    await attendancePage(ctx, ['attendance', 'sessions', '10']);
+    assert.match(ctx.pages[0].html, /Semester mata kuliah: 5/);
+    assert.match(ctx.pages[0].html, /Nadia Putri/);
+    assert.match(ctx.pages[0].html, /NIM 0019/);
+    assert.match(ctx.pages[0].html, /name="records\.1\.status"/);
+    assert.equal(ctx.requests.some(([path]) => path === '/attendance/students'), false);
 });
 
 test('roster search hides rather than removes controls, and bulk presence requires confirmation', async () => {
@@ -195,7 +420,7 @@ test('save then finalize uses the returned version and submits all hidden snapsh
     assert.equal(writes.length, 2);
     assert.equal(writes[0][0], '/attendance/sessions/10');
     assert.equal(writes[0][1].body.version, 7);
-    assert.deepEqual(writes[0][1].body.records.map((record) => [record.user_id, record.status]), [[19, 'present'], [22, 'present']]);
+    assert.deepEqual(writes[0][1].body.records.map((record) => [record.student_id, record.status]), [[119, 'present'], [122, 'present']]);
     assert.deepEqual(writes[1], ['/attendance/sessions/10/finalize', { method: 'POST', body: { version: 8 } }]);
     assert.match(ctx.pages.at(-1).html, /hanya baca/);
     assert.equal(ctx.hasUnsavedChanges, null);
@@ -314,7 +539,7 @@ test('record validation errors reveal hidden students without discarding their e
 test('CSV export uses the applied summary filters and a revocable local object URL', async (t) => {
     const original = { document: globalThis.document, timeout: globalThis.setTimeout, create: URL.createObjectURL, revoke: URL.revokeObjectURL };
     t.after(() => { if (original.document === undefined) delete globalThis.document; else globalThis.document = original.document; globalThis.setTimeout = original.timeout; URL.createObjectURL = original.create; URL.revokeObjectURL = original.revoke; });
-    const blob = new Blob(['Nama,NIM\r\nNadia,0019\r\n'], { type: 'text/csv' });
+    const blob = new Blob(['Nama,NIM,Semester\r\nNadia,0019,5\r\n'], { type: 'text/csv' });
     const link = { clicked: false, removed: false, click() { this.clicked = true; }, remove() { this.removed = true; } };
     let revoked, appended;
     globalThis.document = { createElement: () => link, body: { append: (element) => { appended = element; } } };
