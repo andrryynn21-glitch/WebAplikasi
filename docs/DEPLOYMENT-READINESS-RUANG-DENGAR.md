@@ -1,6 +1,6 @@
 # Deployment Readiness Ruang Dengar
 
-## Promt23: Perubahan Lokal Absensi
+## Promt23: Redeploy Absensi Manual
 
 Perubahan 6 November 2026 memisahkan daftar mahasiswa absensi dari akun dan
 keanggotaan aplikasi. Ketua mengisi nama/NIM manual, satu per satu atau melalui
@@ -12,15 +12,36 @@ dipetakan ke identitas `attendance_students` per kelas/pengguna tanpa mengubah
 nama, NIM, status, catatan, atau timestamp snapshot lama. Anggota aplikasi yang
 belum pernah tercatat dalam absensi tidak otomatis menjadi daftar manual.
 
-**Belum diterapkan ke InfinityFree.** Migrasi hanya diaktifkan pada database
-lokal yang telah diverifikasi. Sebelum deployment hosting, backup database dan
-file privat, hentikan penulisan absensi sementara, lalu terapkan upgrade schema
-dan backend/frontend sebagai satu rilis. Payload penyimpanan sekarang memakai
-`records.*.student_id`, bukan `user_id`; tab lama harus dimuat ulang. DDL MySQL
-tidak sepenuhnya transaksional, jadi jangan menjalankan upgrade sambil menerima
-penyimpanan dari versi lama. Jangan mengimpor ulang SQL awal atau menjalankan
-`migrate:fresh`. Rollback migrasi ditolak jika sudah ada mahasiswa manual agar
-daftar tanpa akun tidak hilang. Format CSV lama tetap dipertahankan.
+**Sudah diterapkan ke InfinityFree pada 7 November 2026**, menggunakan kode
+`3f077c5` yang lulus CI PHP/MySQL/MariaDB. Aplikasi sempat masuk maintenance
+tanpa bypass selama backup, migrasi, dan pemasangan paket 15 file kode/aset;
+maintenance telah dinonaktifkan kembali.
+
+Jumlah data pada seluruh 43 tabel lama dan hash kolom lama pada empat tabel
+absensi cocok sebelum/sesudah migrasi. Tujuh akun, satu kelas, satu laporan,
+satu pertemuan, dan dua catatan absensi tetap dipertahankan. Dua identitas dari
+riwayat menjadi daftar mahasiswa manual; tidak dibuat akun, kelas, atau absensi
+contoh. Empat file privat dan `.env` tidak diubah.
+
+Backup lokal privat berada di
+`output/deployment/infinityfree/private/redeploy-20261106/`. Gunakan
+`database-restorable.sql` dan `private-files-before.zip`, dengan checksum serta
+hasil validasi restore pada `backup-validation.json`. Ekspor awal yang tidak
+lulus restore diberi nama `database-before.unverified-export`; jangan gunakan
+file itu untuk pemulihan. Backup pemulihan menyertakan DDL lengkap langsung dari
+server dan ekspor data dengan checksum transfer yang diverifikasi.
+
+Pemeriksaan publik setelah redeploy lulus: halaman login/asset rilis baru,
+health HTTP 200, penolakan daftar mahasiswa tanpa token (401), dan layout
+320/390/768/1440 piksel. Pemeriksaan ulang pada akun ketua kelas tidak dilakukan
+karena sesi lama kedaluwarsa dan pengguna memilih selesai tanpa login ulang.
+
+Payload penyimpanan sekarang memakai `records.*.student_id`, bukan `user_id`;
+tab lama harus dimuat ulang dan pengguna mungkin perlu login ulang. Untuk
+upgrade berikutnya, tetap backup dan hentikan penulisan terlebih dahulu karena
+DDL MySQL tidak sepenuhnya transaksional. Jangan mengimpor ulang SQL awal atau
+menjalankan `migrate:fresh`. Rollback migrasi ditolak jika sudah ada mahasiswa
+manual agar daftar tanpa akun tidak hilang. Format CSV lama tetap dipertahankan.
 
 ## Target Aktif: InfinityFree (Promt21)
 
